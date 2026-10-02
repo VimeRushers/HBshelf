@@ -1,0 +1,919 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Homebrew Shelf</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Unbounded:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --abyss:#061a3f; --deep:#0c2b62; --deep-2:#133773; --line:#21447f;
+  --tide:#2f6bff; --tide-hi:#5a8bff; --foam:#e6eeff; --mist:#93a8d4;
+  --amber:#ffb84d; --mint:#3ddc97; --coral:#ff7a7a;
+  --r-tile:14px; --r-ui:10px;
+  --ease:cubic-bezier(.2,.8,.2,1); --ease-soft:cubic-bezier(.25,.1,.25,1);
+  --body:"Figtree",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --display:"Unbounded","Figtree",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html{color-scheme:dark}
+body{
+  margin:0;min-height:100vh;color:var(--foam);font:15px/1.5 var(--body);
+  background:
+    radial-gradient(120% 60% at 80% -10%,#1b4fb0 0%,transparent 60%),
+    radial-gradient(90% 50% at -10% 110%,#0f3a8a 0%,transparent 55%),
+    var(--abyss);
+  background-attachment:fixed;
+}
+/* soft light that follows the mouse (position eased in JS) */
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:0;transition:opacity .6s var(--ease-soft);
+  background:radial-gradient(520px circle at var(--mx,50%) var(--my,30%),rgb(90 139 255/.13),transparent 65%)}
+body.lit::before{opacity:1}
+.wrap{position:relative;z-index:1}
+button,input,select{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--tide-hi);outline-offset:3px}
+.wrap{max-width:1240px;margin:0 auto;padding:0 24px}
+@media(max-width:640px){.wrap{padding:0 16px}}
+
+/* top bar */
+.bar{display:flex;align-items:center;gap:16px;padding:18px 0}
+.brand{white-space:nowrap;font-weight:700;font-size:17px;letter-spacing:.01em;margin-right:auto;display:flex;align-items:center;gap:10px}
+.brand svg{width:22px;height:22px}
+.status{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--mist)}
+.status .led{width:9px;height:9px;border-radius:50%;background:var(--mist);box-shadow:0 0 0 3px rgb(147 168 212/.15);transition:background-color .5s,box-shadow .5s}
+.status[data-s=ready] .led{background:var(--mint);box-shadow:0 0 0 3px rgb(61 220 151/.18)}
+.status[data-s=ftp] .led{background:var(--amber);box-shadow:0 0 0 3px rgb(255 184 77/.18)}
+.status[data-s=off] .led{background:var(--coral);box-shadow:0 0 0 3px rgb(255 122 122/.18)}
+.status b{color:var(--foam);font-weight:600}
+.icon-btn{background:none;border:1px solid transparent;border-radius:var(--r-ui);padding:8px;cursor:pointer;color:var(--mist);display:grid;place-items:center;transition:color .2s,border-color .2s,background-color .2s,transform .15s var(--ease)}
+.icon-btn:hover{color:var(--foam);border-color:var(--line);background:rgb(255 255 255/.04)}
+.icon-btn:active{transform:scale(.92)}
+.icon-btn svg{width:20px;height:20px;transition:transform .6s var(--ease)}
+.icon-btn:hover svg{transform:rotate(75deg)}
+@media(max-width:640px){.status span.free{display:none}}
+
+/* setup prompt */
+.setup{display:none;align-items:center;gap:14px;flex-wrap:wrap;background:rgb(255 184 77/.1);border:1px solid rgb(255 184 77/.35);border-radius:var(--r-ui);padding:12px 16px;margin-bottom:8px}
+.setup.show{display:flex}.setup p{margin:0;flex:1;min-width:220px}
+
+/* shelf: the one bold element */
+/* --bleed must equal .wrap's side padding (24px / 16px) or the page scrolls sideways.
+   The scroll box bleeds past the content column (negative margin + equal padding) so a hovered,
+   tilted tile and its shadow have room instead of being clipped at the page edge. Tiles still line up with the text. */
+.shelf{--bleed:24px;display:flex;gap:18px;align-items:flex-end;overflow-x:auto;
+  margin:0 calc(-1 * var(--bleed)) -20px;padding:30px calc(var(--bleed) + 4px) 44px;scroll-padding-inline:calc(var(--bleed) + 4px);
+  scroll-snap-type:x proximity;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+@media(max-width:640px){.shelf{--bleed:16px}}
+.tile{flex:none;width:112px;height:112px;border-radius:var(--r-tile);border:0;padding:0;cursor:pointer;position:relative;
+  background:none;scroll-snap-align:center;perspective:700px;opacity:.78;transition:opacity .3s var(--ease-soft)}
+.tile:hover,.tile:focus-visible{opacity:1}
+.tile .face{display:block;width:100%;height:100%;border-radius:inherit;overflow:hidden;position:relative;background:var(--deep-2);
+  transform:rotateX(var(--rx,0deg)) rotateY(var(--ry,0deg)) scale(var(--s,1));
+  transition:transform .55s var(--ease),box-shadow .3s var(--ease-soft);box-shadow:0 6px 16px -10px rgb(0 0 0/.6)}
+.tile.tracking .face{transition:transform .12s linear,box-shadow .3s var(--ease-soft)}
+.tile:hover .face{--s:1.05;box-shadow:0 16px 30px -14px rgb(0 0 0/.75)}
+.tile:active .face{--s:.97}
+.tile .glare{position:absolute;inset:0;pointer-events:none;opacity:var(--go,0);transition:opacity .35s var(--ease-soft);
+  background:radial-gradient(circle at var(--gx,50%) var(--gy,0%),rgb(255 255 255/.34),transparent 55%)}
+.tile img{width:100%;height:100%;object-fit:cover;display:block}
+.tile .ph{width:100%;height:100%;display:grid;place-items:center;font:700 26px var(--display);color:var(--mist);background:linear-gradient(160deg,var(--deep-2),var(--deep))}
+.tile[aria-selected=true]{width:176px;height:176px;opacity:1}
+.tile[aria-selected=true] .face{box-shadow:0 0 0 3px var(--foam),0 18px 40px -12px rgb(0 0 0/.6)}
+.tile[aria-selected=true]:hover .face{box-shadow:0 0 0 3px var(--foam),0 26px 44px -14px rgb(0 0 0/.75)}
+.tile .busy{position:absolute;left:0;right:0;bottom:0;height:5px;background:rgb(0 0 0/.45)}
+.tile .busy i{display:block;height:100%;width:100%;background:var(--amber);transform-origin:left;transition:transform .6s linear}
+.tile.add{border-radius:var(--r-tile);border:2px dashed var(--line);display:grid;place-items:center;color:var(--mist);opacity:1;transition:border-color .25s,color .25s,background-color .25s,transform .2s var(--ease)}
+.tile.add:hover{border-color:var(--tide-hi);color:var(--foam);background:rgb(47 107 255/.08)}
+.tile.add:active{transform:scale(.95)}
+.tile.add svg{width:34px;height:34px;transition:transform .5s var(--ease)}
+.tile.add:hover svg{transform:rotate(90deg) scale(1.1)}
+@media(max-width:640px){.tile{width:84px;height:84px}.tile[aria-selected=true]{width:128px;height:128px}}
+
+/* selected title */
+.focus{min-height:170px;padding:4px 4px 34px}
+.focus h1{font:700 clamp(26px,4.4vw,46px)/1.08 var(--display);margin:0 0 14px;letter-spacing:-.01em;max-width:22ch;overflow-wrap:anywhere}
+.facts{display:flex;flex-wrap:wrap;gap:8px 28px;margin:0 0 22px;padding:0}
+.facts div{display:flex;flex-direction:column}
+.facts dt{font-size:12px;color:var(--mist)}
+.facts dd{margin:0;font-weight:600}
+.actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.btn{border:0;border-radius:var(--r-ui);padding:11px 18px;cursor:pointer;font-weight:600;background:var(--tide);color:#fff;display:inline-flex;align-items:center;gap:8px;
+  position:relative;overflow:hidden;isolation:isolate;
+  transition:transform .2s var(--ease),background-color .25s,box-shadow .25s var(--ease-soft),border-color .25s,color .25s}
+.btn::after{content:"";position:absolute;inset:0;z-index:-1;transform:translateX(-110%) skewX(-20deg);
+  background:linear-gradient(90deg,transparent,rgb(255 255 255/.28),transparent)}
+.btn:hover:not(:disabled){transform:translateY(-2px);background:var(--tide-hi);box-shadow:0 10px 22px -10px rgb(47 107 255/.9)}
+.btn:hover:not(:disabled)::after{transform:translateX(110%) skewX(-20deg);transition:transform .7s var(--ease-soft)}
+.btn:active:not(:disabled){transform:translateY(0) scale(.97);transition-duration:.08s}
+.btn:disabled{background:var(--deep-2);color:var(--mist);cursor:not-allowed}
+.btn.quiet{background:transparent;border:1px solid var(--line);color:var(--foam)}
+.btn.quiet::after,.btn.bare::after{display:none}
+.btn.quiet:hover:not(:disabled){border-color:var(--mist);background:rgb(255 255 255/.05);box-shadow:0 10px 22px -14px rgb(0 0 0/.8)}
+.btn.quiet:disabled{background:transparent;border-color:var(--deep-2);color:var(--mist)}
+.btn.bare{background:none;color:var(--mist);padding:11px 8px}
+.btn.bare:hover:not(:disabled){color:var(--coral);background:none;box-shadow:none;transform:none}
+.hint{color:var(--mist);font-size:14px;margin:12px 0 0;max-width:60ch}
+.empty h1{font-size:clamp(22px,3.2vw,34px)}
+
+/* lower panels */
+.lower{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:24px;padding-bottom:48px}
+@media(max-width:860px){.lower{grid-template-columns:1fr}}
+.panel{background:rgb(12 43 98/.72);border:1px solid var(--line);border-radius:16px;padding:18px 20px}
+.panel h2{font-size:16px;margin:0 0 12px;font-weight:700;display:flex;align-items:center;justify-content:space-between}
+.panel h2 button{font-size:13px;font-weight:500}
+.job{display:grid;grid-template-columns:1fr auto;gap:2px 12px;padding:12px 0;border-top:1px solid var(--line)}
+.job:first-child{border-top:0;padding-top:4px}
+.job .what{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.job .state{font-size:13px;font-weight:600;text-align:right}
+.job .detail{grid-column:1/-1;color:var(--mist);font-size:13px;overflow-wrap:anywhere}
+.job[data-s=running] .state{color:var(--amber)}.job[data-s=queued] .state{color:var(--mist)}
+.job[data-s=done] .state{color:var(--mint)}.job[data-s=failed] .state{color:var(--coral)}
+.meter{grid-column:1/-1;height:6px;border-radius:3px;background:var(--abyss);overflow:hidden;margin-top:6px}
+.meter i{display:block;height:100%;width:100%;background:var(--amber);transform-origin:left;transition:transform .6s linear}
+.meter.indet i{width:30%;transform:none;transition:none;animation:slide 1.4s ease-in-out infinite}
+@keyframes slide{0%{transform:translateX(-100%)}100%{transform:translateX(340%)}}
+.linkish{background:none;border:0;color:var(--tide-hi);cursor:pointer;padding:0 0 1px;font-weight:600;
+  background-image:linear-gradient(currentColor,currentColor);background-repeat:no-repeat;background-position:0 100%;background-size:0 1px;transition:background-size .3s var(--ease),color .2s}
+.linkish:hover{color:var(--foam);background-size:100% 1px}
+.muted{color:var(--mist)}
+
+.urlbar{display:flex;align-items:center;gap:6px;background:var(--abyss);border:1px solid var(--line);border-radius:12px;padding:5px 5px 5px 13px;
+  transition:border-color .2s,box-shadow .25s var(--ease-soft)}
+.urlbar:hover{border-color:#2d5599}
+.urlbar:focus-within{border-color:var(--tide-hi);box-shadow:0 0 0 4px rgb(47 107 255/.22)}
+.urlbar>svg{width:18px;height:18px;flex:none;color:var(--mist);transition:color .2s}
+.urlbar:focus-within>svg{color:var(--tide-hi)}
+.urlbar input{flex:1;min-width:0;background:none;border:0;padding:8px 4px;outline:none}
+.urlbar input::placeholder{color:#6f86b5}
+.urlbar-go{flex:none;display:inline-flex;align-items:center;gap:7px;border:0;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer;
+  background:var(--tide);color:#fff;transition:background-color .2s,color .2s,transform .15s var(--ease)}
+.urlbar-go svg{width:16px;height:16px;transition:transform .3s var(--ease)}
+.urlbar-go:hover:not(:disabled){background:var(--tide-hi)}
+.urlbar-go:hover:not(:disabled) svg{transform:translateY(2px)}
+.urlbar-go:active:not(:disabled){transform:scale(.95)}
+.urlbar-go:disabled{background:var(--deep-2);color:var(--mist);cursor:default}
+.urlbar-go.busy svg{animation:nudge .7s var(--ease-soft) infinite alternate}
+@keyframes nudge{to{transform:translateY(3px)}}
+@media(max-width:420px){.urlbar-go span{display:none}.urlbar-go{padding:8px 11px}}
+.field{width:100%;background:var(--abyss);border:1px solid var(--line);border-radius:var(--r-ui);padding:10px 12px;transition:border-color .2s,box-shadow .25s var(--ease-soft)}
+.field:hover{border-color:#2d5599}
+.field:focus{border-color:var(--tide-hi);outline:none;box-shadow:0 0 0 4px rgb(47 107 255/.22)}
+.drop{margin-top:14px;border:2px dashed var(--line);border-radius:12px;padding:22px 16px;text-align:center;color:var(--mist);cursor:pointer;width:100%;background:none;transition:border-color .25s,color .25s,background-color .25s,transform .2s var(--ease)}
+.drop:hover{border-color:var(--tide-hi);color:var(--foam);background:rgb(47 107 255/.07)}
+.drop:active{transform:scale(.99)}
+.drop strong{color:var(--foam);display:block;margin-bottom:2px}
+.uploads{margin-top:10px;font-size:13px}
+.uploads div{display:flex;justify-content:space-between;gap:10px;padding:3px 0}
+.small{font-size:13px}
+.panel p.small{margin:14px 0 0}
+code{background:var(--abyss);padding:1px 6px;border-radius:5px;overflow-wrap:anywhere;font-size:12.5px}
+
+/* page-wide drop overlay */
+.dropzone{position:fixed;inset:0;display:grid;place-items:center;background:rgb(6 26 63/.86);z-index:40;border:3px dashed var(--tide-hi);
+  opacity:0;visibility:hidden;transition:opacity .25s var(--ease-soft),visibility 0s .25s}
+.dropzone.on{opacity:1;visibility:visible;transition:opacity .25s var(--ease-soft)}
+.dropzone p{font:700 clamp(20px,3vw,30px) var(--display);margin:0;transform:scale(.94);transition:transform .35s var(--ease)}
+.dropzone.on p{transform:none}
+
+/* settings drawer */
+dialog{margin:0 0 0 auto;height:100vh;max-height:none;width:min(420px,100vw);border:0;border-left:1px solid var(--line);background:var(--deep);color:var(--foam);padding:24px;overflow-y:auto}
+dialog::backdrop{background:rgb(3 12 30/.6)}
+dialog[open]{animation:drawer-in .38s var(--ease)}
+dialog[open]::backdrop{animation:fade-in .3s var(--ease-soft)}
+@keyframes drawer-in{from{transform:translateX(100%)}}
+@keyframes fade-in{from{opacity:0}}
+dialog h2{margin:0 0 4px;font-size:20px}
+dialog label{display:block;font-size:13px;color:var(--mist);margin:16px 0 6px}
+dialog .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+dialog .pair label{margin-top:16px}
+dialog fieldset{border:0;padding:0;margin:0}
+dialog .check{display:flex;gap:8px;align-items:center;margin-top:10px;font-size:14px}
+dialog .foot{display:flex;gap:10px;margin-top:24px;position:sticky;bottom:-24px;background:var(--deep);padding:14px 0}
+.svc{display:flex;gap:8px;align-items:center;font-size:14px;margin:6px 0}
+.svc .led{width:8px;height:8px;border-radius:50%;background:var(--coral)}.svc .led.on{background:var(--mint)}
+
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);opacity:0;background:var(--foam);color:var(--abyss);font-weight:600;padding:10px 18px;border-radius:99px;transition:.25s;z-index:50;pointer-events:none}
+.toast.on{opacity:1;transform:translateX(-50%)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+
+/* view tabs */
+[hidden]{display:none!important}
+.tabs{display:inline-flex;gap:4px;background:var(--deep);border:1px solid var(--line);border-radius:12px;padding:4px;margin:2px 0 6px}
+.tab{border:0;border-radius:9px;padding:8px 18px;cursor:pointer;font-weight:600;color:var(--mist);background:none;transition:color .2s,background-color .2s}
+.tab:hover{color:var(--foam)}
+.tab[aria-selected=true]{background:var(--tide);color:#fff}
+
+/* shop */
+.shopbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:2px 0 20px}
+.shopbar .urlbar{flex:1;min-width:240px}
+.shopbar .field{width:auto;min-width:150px}
+.shopgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px;padding-bottom:12px}
+.card{background:var(--deep);border:1px solid var(--line);border-radius:14px;overflow:hidden;display:flex;flex-direction:column;transition:transform .25s var(--ease),border-color .25s,box-shadow .25s var(--ease-soft)}
+.card:hover{border-color:#2d5599;transform:translateY(-3px);box-shadow:0 14px 30px -16px rgb(0 0 0/.8)}
+.card .cover{position:relative;aspect-ratio:1/1;background:var(--deep-2);overflow:hidden}
+.card .cover img{position:relative;z-index:1;width:100%;height:100%;object-fit:cover;display:block}
+.card .cover .ph{position:absolute;inset:0;display:grid;place-items:center;font:700 44px var(--display);color:var(--mist);background:linear-gradient(160deg,var(--deep-2),var(--deep))}
+.card .meta{padding:12px 14px 14px;display:flex;flex-direction:column;gap:7px;flex:1}
+.card .name{font-weight:600;font-size:14px;line-height:1.32;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.card .sub{font-size:12.5px;color:var(--mist)}
+.card .actions{margin-top:auto;display:flex;gap:8px;align-items:center}
+.card .actions .btn{padding:9px 14px;font-size:13.5px;flex:1;justify-content:center}
+.card .state{font-size:13px;font-weight:600}
+.card .state[data-s=running],.card .state[data-s=paused]{color:var(--amber)}
+.card .state[data-s=queued]{color:var(--mist)}
+.card .state[data-s=done]{color:var(--mint)}
+.job[data-s=paused] .state{color:var(--amber)}
+.card .dup{align-self:flex-start;font-size:11.5px;color:var(--amber);background:rgb(255 184 77/.1);border:1px solid rgb(255 184 77/.3);border-radius:6px;padding:2px 8px}
+
+/* storage */
+#storage{display:grid;gap:24px;padding-bottom:24px}
+.s-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:2px 0 0}
+.s-card{background:var(--deep);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+.s-card .num{font:700 22px/1.2 var(--display)}
+.s-card .lab{font-size:12.5px;color:var(--mist);margin-top:3px}
+.s-card .gauge{height:6px;border-radius:3px;background:var(--abyss);overflow:hidden;margin-top:12px}
+.s-card .gauge i{display:block;height:100%;background:var(--tide);border-radius:3px}
+.work-head{margin:0 0 12px}
+.work{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
+.work:first-child{border-top:0;padding-top:4px}
+.work .chk{flex:none;width:16px;height:16px;accent-color:var(--tide);cursor:pointer}
+.work .info,.librow .info{flex:1;min-width:0}
+.work .name,.librow .name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.work .meta,.librow .meta{font-size:13px;color:var(--mist);overflow-wrap:anywhere}
+.work .orphan{flex:none;font-size:11px;color:var(--amber);border:1px solid rgb(255 184 77/.35);border-radius:6px;padding:1px 6px}
+.work .cat{flex:none;font-size:11px;color:var(--mist);border:1px solid var(--line);border-radius:6px;padding:1px 6px}
+.work .cat[data-c=download]{color:var(--tide-hi);border-color:rgb(90 139 255/.35)}
+.work .cat[data-c=ingest]{color:var(--amber);border-color:rgb(255 184 77/.35)}
+.work .cat[data-c=failed]{color:var(--coral);border-color:rgb(255 122 122/.35)}
+.librow{display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1px solid var(--line)}
+.librow:first-child{border-top:0;padding-top:4px}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="bar">
+    <div class="brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="7" width="18" height="11" rx="3"/><path d="M8 11v3M6.5 12.5h3M15 12h.01M17 13.5h.01"/></svg>Homebrew Shelf</div>
+    <div class="status" id="status" data-s="none"><span class="led"></span><span id="status-text">Checking console…</span><span class="free" id="free"></span></div>
+    <button class="icon-btn" id="open-settings" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+  </header>
+
+  <div class="setup" id="setup"><p>Tell the shelf where your console is so it can send things to it.</p><button class="btn" data-open-settings>Connect console</button></div>
+
+  <nav class="tabs" id="tabs" aria-label="View">
+    <button class="tab" id="tab-library" data-tab="library" aria-selected="true">Library</button>
+    <button class="tab" id="tab-shop" data-tab="shop" aria-selected="false">Shop</button>
+    <button class="tab" id="tab-storage" data-tab="storage" aria-selected="false">Storage</button>
+  </nav>
+
+  <div class="shelf" id="shelf" role="listbox" aria-label="Library" aria-orientation="horizontal"></div>
+  <section class="focus" id="focus" aria-live="polite"></section>
+
+  <section id="shop" hidden aria-label="Shop">
+    <div class="shopbar">
+      <div class="urlbar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <label class="sr" for="shop-q">Search</label>
+        <input id="shop-q" type="search" placeholder="Search the store" autocomplete="off" spellcheck="false">
+      </div>
+      <select class="field" id="shop-region" aria-label="Region"></select>
+      <span class="muted small" id="shop-count"></span>
+    </div>
+    <div class="shopgrid" id="shop-grid"></div>
+  </section>
+
+  <section id="storage" hidden aria-label="Storage">
+    <div class="s-summary" id="s-summary"></div>
+    <section class="panel">
+      <h2>Work directories <button class="linkish" id="clean-orphans">Clean all orphans</button></h2>
+      <div class="work-head"><button class="btn" id="del-selected" disabled>Delete selected</button></div>
+      <div id="work-list"></div>
+    </section>
+    <section class="panel">
+      <h2>Library items</h2>
+      <div id="lib-list"></div>
+    </section>
+  </section>
+
+  <div class="lower">
+    <section class="panel">
+      <h2>Activity <button class="linkish" id="clear" hidden>Clear finished</button></h2>
+      <div id="jobs"></div>
+    </section>
+    <section class="panel" id="add">
+      <h2>Add to library</h2>
+      <form class="urlbar" id="f-url">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>
+        <label class="sr" for="url">Download link</label>
+        <input id="url" type="url" placeholder="Paste a direct download link" required autocomplete="off" spellcheck="false">
+        <button class="urlbar-go" id="url-go" aria-label="Download" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v12M6 11l6 6 6-6M5 20h14"/></svg><span>Download</span></button>
+      </form>
+      <button class="drop" id="drop" type="button"><strong>Drop files anywhere on this page</strong>or click to choose PKGs, split parts, or zip/7z/rar archives</button>
+      <input type="file" id="pick" multiple hidden>
+      <div class="uploads" id="uploads"></div>
+      <p class="small muted">Game dump folders go straight into the server's <code>inbox</code> folder. They're converted to a PKG automatically.</p>
+    </section>
+  </div>
+</div>
+
+<div class="dropzone" id="dropzone"><p>Drop to add to your library</p></div>
+<div class="toast" id="toast" role="status"></div>
+
+<dialog id="settings" aria-labelledby="set-title">
+  <form id="f-set" method="dialog">
+    <h2 id="set-title">Console connection</h2>
+    <div id="svc"></div>
+    <label for="s-host">Console IP address</label>
+    <input class="field" id="s-host" name="ps4_host" placeholder="192.168.1.50" inputmode="decimal">
+    <label for="s-auto">When something new is ready</label>
+    <select class="field" id="s-auto" name="auto_send">
+      <option value="none">Keep it on the shelf</option>
+      <option value="rpi">Install it on the console</option>
+      <option value="ftp">Copy it to the console over FTP</option>
+    </select>
+    <label for="s-url">This server's address, as the console sees it</label>
+    <input class="field" id="s-url" name="public_url" placeholder="http://192.168.1.10:8420">
+    <fieldset>
+      <div class="pair">
+        <div><label for="s-rpi">Installer port</label><input class="field" id="s-rpi" name="rpi_port"></div>
+        <div><label for="s-ftpp">FTP port</label><input class="field" id="s-ftpp" name="ftp_port"></div>
+      </div>
+      <label for="s-dir">FTP folder on the console</label><input class="field" id="s-dir" name="ftp_dir">
+      <div class="pair">
+        <div><label for="s-user">FTP user</label><input class="field" id="s-user" name="ftp_user" autocomplete="off"></div>
+        <div><label for="s-pass">FTP password</label><input class="field" id="s-pass" name="ftp_pass" type="password" placeholder="unchanged" autocomplete="new-password"></div>
+      </div>
+    </fieldset>
+    <p class="small muted">On the console, start <b>Remote Package Installer</b> to install from here, or enable the FTP server in GoldHEN/etaHEN to copy files.</p>
+    <p class="small muted" id="fpkgi"></p>
+    <div class="foot"><button class="btn" id="save" value="save">Save</button><button class="btn quiet" value="cancel" formnovalidate>Close</button></div>
+  </form>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+const size = n => n >= 2**30 ? (n / 2**30).toFixed(1) + ' GB' : n > 0 ? Math.max(1, Math.round(n / 2**20)) + ' MB' : '0';
+const CAT = {game: 'Game', homebrew: 'App', update: 'Update', dlc: 'Add-on', other: 'Other'};
+const JOB = {download: 'Download', ingest: 'Prepare', send_ftp: 'Copy to console', send_rpi: 'Install on console', send_auto: 'Auto-send'};
+const STATE = {queued: 'Waiting', running: 'Working', paused: 'Paused', done: 'Done', failed: 'Failed', hold: 'Waiting', cancelled: 'Cancelling'};
+let S = null, selected = null, shelfKey = '';
+
+let toastTimer;
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.classList.add('on');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('on'), 2600);
+}
+async function api(url, opts = {}) {
+  const r = await fetch(url, {headers: {'content-type': 'application/json'}, ...opts});
+  if (!r.ok) { toast((await r.json().catch(() => ({}))).detail || `Request failed (${r.status})`); throw new Error(r.status); }
+  return r.json();
+}
+
+function consoleState(s) {
+  if (!s.settings.ps4_host) return ['none', 'Console not connected'];
+  if (s.ps4.rpi) return ['ready', `Console ready at <b>${esc(s.settings.ps4_host)}</b>`];
+  if (s.ps4.ftp) return ['ftp', `Console reachable by FTP only`];
+  return ['off', `Console at <b>${esc(s.settings.ps4_host)}</b> is offline`];
+}
+
+function activeJobFor(id) { return S.jobs.find(j => j.item_id === id && ['running', 'queued', 'paused'].includes(j.status)); }
+
+function renderShelf() {
+  const key = S.items.map(i => i.id + ':' + i.has_icon).join(',') + '|' + S.jobs.filter(j => j.item_id && (j.status === 'running' || j.status === 'paused')).map(j => j.item_id + ':' + Math.round((j.progress || 0) * 50)).join(',');
+  if (!S.items.find(i => i.id === selected)) selected = S.items[0]?.id ?? null;
+  if (key + selected === shelfKey) return;
+  shelfKey = key + selected;
+  const hadFocus = document.activeElement?.classList.contains('tile');
+  const before = tileRects();
+  $('#shelf').innerHTML = S.items.map(i => {
+    const j = activeJobFor(i.id);
+    return `<button class="tile" role="option" data-id="${i.id}" aria-selected="${i.id === selected}" aria-label="${esc(i.title)}" tabindex="${i.id === selected ? 0 : -1}"><span class="face">
+      ${i.has_icon ? `<img src="/icons/${esc(i.content_id)}.png" alt="" loading="lazy" draggable="false">` : `<span class="ph">${esc(i.title.slice(0, 1))}</span>`}
+      ${j && (j.status === 'running' || j.status === 'paused') ? `<span class="busy"><i style="transform:scaleX(${(j.progress || 0).toFixed(3)})"></i></span>` : ''}
+      <span class="glare"></span></span></button>`;
+  }).join('') + `<button class="tile add" aria-label="Add to library" data-add tabindex="${S.items.length ? -1 : 0}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></button>`;
+  const sel = $(`.tile[data-id="${selected}"]`);
+  animateShelf(before);
+  if (sel) { sel.scrollIntoView({block: 'nearest', inline: 'nearest', behavior: reduceMotion.matches || knownIds === null ? 'auto' : 'smooth'}); if (hadFocus) sel.focus({preventScroll: true}); }
+}
+
+function renderFocusInto(el) {
+  const i = S.items.find(x => x.id === selected);
+  if (!i) {
+    el.innerHTML = `<div class="empty"><h1>Your shelf is empty</h1>
+      <p class="hint">Add a homebrew app or a backup of a game you own: paste a download link below, drop files onto this page, or copy a dump folder into the server's inbox.</p></div>`;
+    return;
+  }
+  const j = activeJobFor(i.id), rpi = S.ps4.rpi, ftp = S.ps4.ftp, host = S.settings.ps4_host;
+  let hint = '';
+  if (!host) hint = 'Connect your console in settings to send this to it.';
+  else if (!rpi && !ftp) hint = 'The console isn’t answering. Turn it on, then start Remote Package Installer or the FTP server.';
+  else if (!rpi) hint = 'To install straight from here, start Remote Package Installer on the console. Copying over FTP works now.';
+  if (j) hint = `${JOB[j.kind] || 'Working'}: ${esc(j.message || STATE[j.status])}`;
+  el.innerHTML = `<h1>${esc(i.title)}</h1>
+    <dl class="facts">
+      <div><dt>Type</dt><dd>${CAT[i.category] || esc(i.category)}</dd></div>
+      <div><dt>Version</dt><dd>${esc(i.version)}</dd></div>
+      <div><dt>Size</dt><dd>${size(i.size)}</dd></div>
+      ${i.min_fw ? `<div><dt>Needs firmware</dt><dd>${esc(i.min_fw)} or newer</dd></div>` : ''}
+      <div><dt>Title ID</dt><dd>${esc(i.title_id)}</dd></div>
+      ${i.region ? `<div><dt>Region</dt><dd>${esc(i.region)}</dd></div>` : ''}
+    </dl>
+    <div class="actions">
+      <button class="btn" data-send="rpi" ${!host || !rpi || j ? 'disabled' : ''}>Install on console</button>
+      <button class="btn quiet" data-send="ftp" ${!host || !ftp || j ? 'disabled' : ''}>Copy to console</button>
+      <button class="btn quiet" data-send="auto" ${!host || j ? 'disabled' : ''}>Auto install/copy</button>
+      <button class="btn bare" data-del>Remove from server</button>
+    </div>
+    ${hint ? `<p class="hint">${hint}</p>` : ''}`;
+}
+
+// ---------- motion: only in answer to something that changed ----------
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const EASE = 'cubic-bezier(.2,.8,.2,1)';
+let knownIds = null, lastFocusId, lastFocusIdx = 0;
+
+function tileRects() {
+  const m = new Map();
+  document.querySelectorAll('#shelf .tile').forEach(t => m.set(t.dataset.id ?? 'add', t.getBoundingClientRect()));
+  return m;
+}
+
+function animateShelf(before) {
+  const tiles = [...document.querySelectorAll('#shelf .tile')];
+  const ids = tiles.map(t => t.dataset.id ?? 'add');
+  if (reduceMotion.matches) { knownIds = new Set(ids); return; }
+  if (knownIds === null) {
+    // first paint: the shelf slides in, tile by tile
+    tiles.forEach((t, n) => t.animate(
+      [{opacity: 0, transform: 'translateX(48px) scale(.92)'}, {opacity: 1, transform: 'none'}],
+      {duration: 460, delay: 60 + n * 55, easing: EASE, fill: 'backwards'}));
+  } else {
+    tiles.forEach((t, n) => {
+      const id = ids[n], b = before.get(id);
+      if (!knownIds.has(id) && id !== 'add') {
+        // newly added: pop in with a green pulse
+        t.animate([{opacity: 0, transform: 'scale(.55)'}, {opacity: 1, transform: 'scale(1.08)', offset: .65}, {transform: 'none'}],
+          {duration: 560, easing: EASE});
+        t.animate([{boxShadow: '0 0 0 0 rgb(61 220 151 / .75)'}, {boxShadow: '0 0 0 18px rgb(61 220 151 / 0)'}],
+          {duration: 900, delay: 350, easing: 'ease-out'});
+        return;
+      }
+      if (!b) return;
+      // FLIP: start where the tile was, glide to where it is now (transform only)
+      const a = t.getBoundingClientRect();
+      const dx = b.left - a.left, dy = b.bottom - a.bottom, sc = b.width / a.width;
+      if (Math.abs(dx) < .5 && Math.abs(dy) < .5 && Math.abs(sc - 1) < .01) return;
+      t.animate([{transformOrigin: 'left bottom', transform: `translate(${dx}px, ${dy}px) scale(${sc})`},
+                 {transformOrigin: 'left bottom', transform: 'none'}], {duration: 280, easing: EASE});
+    });
+  }
+  knownIds = new Set(ids);
+}
+
+function renderFocus() {
+  const scratch = document.createElement('div');
+  renderFocusInto(scratch);
+  const el = $('#focus');
+  const changedItem = selected !== lastFocusId;
+  if (scratch.innerHTML === el.innerHTML && !changedItem) return;  // polling redraw with nothing new: leave the DOM alone
+  el.innerHTML = scratch.innerHTML;
+  const idx = S.items.findIndex(x => x.id === selected);
+  if (changedItem && lastFocusId !== undefined && !reduceMotion.matches) {
+    // details slide in from the side you moved toward
+    const dir = idx >= lastFocusIdx ? 1 : -1;
+    [...el.children].forEach((c, n) => c.animate(
+      [{opacity: 0, transform: `translateX(${dir * 22}px)`}, {opacity: 1, transform: 'none'}],
+      {duration: 260, delay: n * 45, easing: EASE, fill: 'backwards'}));
+  }
+  lastFocusId = selected; lastFocusIdx = idx;
+}
+
+function hopSelected() {
+  if (reduceMotion.matches) return;
+  $(`.tile[data-id="${selected}"]`)?.animate(
+    [{transform: 'none'}, {transform: 'translateY(-14px)', offset: .4}, {transform: 'translateY(2px)', offset: .75}, {transform: 'none'}],
+    {duration: 480, easing: 'ease-out'});
+}
+
+function jobName(j) {
+  if (j.title) return j.title;
+  const src = (j.source || '').split('?')[0].replace(/\/+$/, '');
+  return decodeURIComponent(src.split('/').pop() || '') || 'Item';
+}
+let seenJobs = null;
+function renderJobs() {
+  const jobs = S.jobs.filter(j => j.status !== 'hold');
+  $('#clear').hidden = !jobs.some(j => j.status === 'done' || j.status === 'failed');
+  $('#jobs').innerHTML = jobs.map(j => `<div class="job" data-s="${j.status}">
+      <div class="what">${JOB[j.kind] || esc(j.kind)}: ${esc(jobName(j))}</div>
+      <div class="state">${STATE[j.status] || esc(j.status)}${j.status === 'failed' ? ` · <button class="linkish" data-retry="${j.id}">Retry</button>` : ''}${j.status === 'running' && !j.kind.startsWith('send') ? ` · <button class="linkish" data-pause="${j.id}">Pause</button>` : ''}${j.status === 'paused' ? ` · <button class="linkish" data-resume="${j.id}">Resume</button>` : ''}${(j.status === 'running' || j.status === 'queued') ? ` · <button class="linkish" data-cancel="${j.id}">Cancel</button>` : ''}</div>
+      ${j.message ? `<div class="detail">${esc(j.message)}</div>` : ''}
+      ${j.status === 'running' ? `<div class="meter ${j.progress > 0 ? '' : 'indet'}"><i style="${j.progress > 0 ? `transform:scaleX(${j.progress.toFixed(4)})` : ''}"></i></div>` : ''}
+    </div>`).join('') || '<p class="muted small">Nothing happening. Downloads, conversions and transfers show up here.</p>';
+  const now = new Map(jobs.map(j => [j.id, j.status]));
+  if (seenJobs && !reduceMotion.matches) {
+    document.querySelectorAll('#jobs .job').forEach((row, n) => {
+      const j = jobs[n], was = seenJobs.get(j.id);
+      if (was === undefined) row.animate([{opacity: 0, transform: 'translateY(-10px)'}, {opacity: 1, transform: 'none'}], {duration: 380, easing: EASE});
+      else if (was !== j.status && (j.status === 'done' || j.status === 'failed'))
+        row.querySelector('.state').animate([{transform: 'scale(1)'}, {transform: 'scale(1.18)', offset: .4}, {transform: 'scale(1)'}], {duration: 420, easing: EASE});
+    });
+  }
+  seenJobs = now;
+}
+
+function renderStatus() {
+  const [s, text] = consoleState(S);
+  $('#status').dataset.s = s; $('#status-text').innerHTML = text;
+  $('#free').textContent = `· ${size(S.disk.free)} free on server`;
+  $('#setup').classList.toggle('show', !S.settings.ps4_host);
+  $('#svc').innerHTML = S.settings.ps4_host
+    ? `<div class="svc"><span class="led ${S.ps4.rpi ? 'on' : ''}"></span>Remote Package Installer ${S.ps4.rpi ? 'is running' : 'isn’t running'}</div>
+       <div class="svc"><span class="led ${S.ps4.ftp ? 'on' : ''}"></span>FTP server ${S.ps4.ftp ? 'is running' : 'isn’t running'}</div>` : '';
+  const pu = S.settings.public_url || 'http://<server>:8420';
+  $('#fpkgi').innerHTML = `Using FPKGi on the console? Point it at <code>${esc(pu)}/fpkgi/HOMEBREW.json</code> (or GAMES, UPDATES, DLC) to browse this library.`;
+}
+
+async function refresh() {
+  try { S = await (await fetch('/api/state')).json(); } catch { return; }
+  renderStatus(); renderShelf(); renderFocus(); renderJobs();
+  if (view === 'shop') renderShop();
+}
+
+function select(id, focus) {
+  selected = id; shelfKey = ''; renderShelf(); renderFocus();
+  if (focus) $(`.tile[data-id="${id}"]`)?.focus();
+}
+
+// shelf: click + controller-style arrow keys
+$('#shelf').addEventListener('click', e => {
+  const t = e.target.closest('.tile'); if (!t) return;
+  if (t.dataset.add !== undefined) { $('#url').focus(); $('#add').scrollIntoView({behavior: 'smooth', block: 'center'}); return; }
+  select(+t.dataset.id, true);
+});
+$('#shelf').addEventListener('keydown', e => {
+  const ids = S.items.map(i => i.id), idx = ids.indexOf(selected);
+  const move = {ArrowRight: 1, ArrowLeft: -1, Home: -Infinity, End: Infinity}[e.key];
+  if (move !== undefined && ids.length) {
+    e.preventDefault();
+    select(ids[Math.max(0, Math.min(ids.length - 1, move === -Infinity ? 0 : move === Infinity ? ids.length - 1 : idx + move))], true);
+  } else if (e.key === 'Enter' && selected && e.target.dataset.id) {
+    e.preventDefault(); $('#focus [data-send]:not([disabled])')?.click();
+  }
+});
+
+$('#focus').addEventListener('click', async e => {
+  const i = S.items.find(x => x.id === selected); if (!i) return;
+  const send = e.target.closest('[data-send]');
+  if (send) {
+    hopSelected();
+    await api(`/api/items/${i.id}/send`, {method: 'POST', body: JSON.stringify({method: send.dataset.send})});
+    refresh(); toast({rpi: 'Install started', auto: 'Auto-send started'}[send.dataset.send] || 'Copy started');
+  }
+  if (e.target.closest('[data-del]') && confirm(`Remove “${i.title}” from the server? It stays installed on the console.`)) {
+    await api(`/api/items/${i.id}`, {method: 'DELETE'}); refresh(); toast('Removed from server');
+  }
+});
+$('#jobs').addEventListener('click', e => {
+  const r = e.target.closest('[data-retry]'); if (r) api(`/api/jobs/${r.dataset.retry}/retry`, {method: 'POST'}).then(() => { refresh(); toast('Retrying'); });
+  const c = e.target.closest('[data-cancel]'); if (c) api(`/api/jobs/${c.dataset.cancel}/cancel`, {method: 'POST'}).then(() => { refresh(); toast('Cancelled'); });
+  const p = e.target.closest('[data-pause]'); if (p) api(`/api/jobs/${p.dataset.pause}/pause`, {method: 'POST'}).then(() => { refresh(); toast('Paused'); });
+  const res = e.target.closest('[data-resume]'); if (res) api(`/api/jobs/${res.dataset.resume}/resume`, {method: 'POST'}).then(() => { refresh(); toast('Resumed'); });
+});
+$('#clear').onclick = async () => { await api('/api/jobs/clear', {method: 'POST'}); refresh(); };
+
+// ---------- shop: browse + install from the catalog ----------
+let catalog = null, view = 'library';
+
+function setTab(tab) {
+  view = tab;
+  const lib = tab === 'library', shop = tab === 'shop', st = tab === 'storage';
+  $('#tab-library').setAttribute('aria-selected', String(lib));
+  $('#tab-shop').setAttribute('aria-selected', String(shop));
+  $('#tab-storage').setAttribute('aria-selected', String(st));
+  $('#shelf').hidden = !lib;
+  $('#focus').hidden = !lib;
+  $('#shop').hidden = !shop;
+  $('#storage').hidden = !st;
+  if (shop) openShop();
+  if (st) openStorage();
+}
+
+async function openShop() {
+  if (!catalog) {
+    try { catalog = await (await fetch('/api/catalog')).json(); }
+    catch { toast('Store unreachable'); $('#shop-grid').innerHTML = '<p class="muted small">Couldn’t load the store.</p>'; return; }
+    const regions = [...new Set(catalog.entries.map(e => e.region).filter(Boolean))].sort();
+    $('#shop-region').innerHTML = '<option value="">All regions</option>' + regions.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('');
+  }
+  renderShop();
+}
+
+function reconcileCatalog() {
+  if (!catalog || !S) return;
+  for (const e of catalog.entries) {
+    if (e.status === 'installed') continue;
+    if (e.job_id != null) {
+      const j = S.jobs.find(j => j.id === e.job_id);
+      if (j) e.status = j.status;
+    }
+  }
+}
+
+function cardHTML(e, i) {
+  const st = e.status || '';
+  const active = ['queued', 'running', 'paused'].includes(st);
+  const done = st === 'done' || st === 'installed';
+  const meta = [e.size ? size(e.size) : '', e.region, e.version].filter(Boolean).map(esc).join(' · ');
+  let actions;
+  if (done) actions = `<span class="state" data-s="done">Installed</span>`;
+  else if (active) {
+    actions = `<span class="state" data-s="${st}">${esc(STATE[st] || st)}</span>` +
+      (st === 'running' && e.job_id != null ? `<button class="btn quiet" data-pause="${e.job_id}">Pause</button>` : '') +
+      (st === 'paused' && e.job_id != null ? `<button class="btn quiet" data-resume="${e.job_id}">Resume</button>` : '');
+  }
+  else if (st === 'failed') actions = `<button class="btn" data-install="${i}">Retry</button>`;
+  else actions = `<button class="btn" data-install="${i}">Install</button>`;
+  return `<article class="card">
+    <div class="cover"><span class="ph">${esc((e.name || '?').trim().slice(0, 1).toUpperCase())}</span>${e.cover_url ? `<img src="${esc(e.cover_url)}" alt="" loading="lazy" onerror="this.remove()">` : ''}</div>
+    <div class="meta">
+      <div class="name" title="${esc(e.name)}">${esc(e.name)}</div>
+      ${e.duplicate ? `<span class="dup" title="Another version of this title is already in your library">another version in library</span>` : ''}
+      ${meta ? `<div class="sub">${meta}</div>` : ''}
+      <div class="actions">${actions}</div>
+    </div>
+  </article>`;
+}
+
+let shopKey = '';
+function renderShop() {
+  if (!catalog) return;
+  reconcileCatalog();
+  const q = $('#shop-q').value.trim().toLowerCase();
+  const region = $('#shop-region').value;
+  const idxs = [];
+  catalog.entries.forEach((e, i) => {
+    if (region && e.region !== region) return;
+    if (q && !(e.name || '').toLowerCase().includes(q) && !(e.title_id || '').toLowerCase().includes(q)) return;
+    idxs.push(i);
+  });
+  const key = q + '|' + region + '|' + idxs.map(i => `${i}:${catalog.entries[i].status}:${catalog.entries[i].job_id}`).join(',');
+  if (key === shopKey) return;
+  shopKey = key;
+  $('#shop-count').textContent = idxs.length === catalog.entries.length ? `${idxs.length} titles` : `${idxs.length} of ${catalog.entries.length} titles`;
+  $('#shop-grid').innerHTML = idxs.length ? idxs.map(i => cardHTML(catalog.entries[i], i)).join('') : '<p class="muted small">No titles match. Try a different search or region.</p>';
+}
+
+$('#tabs').addEventListener('click', e => {
+  const t = e.target.closest('[data-tab]'); if (t) setTab(t.dataset.tab);
+});
+$('#shop-q').addEventListener('input', renderShop);
+$('#shop-region').addEventListener('change', renderShop);
+$('#shop').addEventListener('click', async e => {
+  const inst = e.target.closest('[data-install]');
+  if (inst) {
+    const i = +inst.dataset.install, entry = catalog?.entries[i]; if (!entry) return;
+    const res = await api('/api/shop/install', {method: 'POST', body: JSON.stringify({url: entry.url})});
+    entry.job_id = res.job; entry.status = 'queued';
+    refresh(); toast('Install queued'); return;
+  }
+  const pause = e.target.closest('[data-pause]');
+  if (pause) { await api(`/api/jobs/${pause.dataset.pause}/pause`, {method: 'POST'}); refresh(); toast('Paused'); return; }
+  const resume = e.target.closest('[data-resume]');
+  if (resume) { await api(`/api/jobs/${resume.dataset.resume}/resume`, {method: 'POST'}); refresh(); toast('Resumed'); }
+});
+
+// ---------- storage: disk usage + work-dir cleanup ----------
+let storageData = null;
+
+const human = n => {
+  if (!n || n <= 0) return '0';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? Math.round(n) : n.toFixed(n >= 100 ? 0 : 1)) + ' ' + u[i];
+};
+const ago = t => {
+  if (!t) return '';
+  const d = Date.now() / 1000 - t;
+  if (d < 60) return 'just now';
+  if (d < 3600) return Math.round(d / 60) + 'm ago';
+  if (d < 86400) return Math.round(d / 3600) + 'h ago';
+  return Math.round(d / 86400) + 'd ago';
+};
+
+async function refreshStorage() {
+  try { storageData = await (await fetch('/api/storage')).json(); }
+  catch { return; }
+  renderStorage();
+}
+function openStorage() { refreshStorage(); }
+
+function renderStorage() {
+  if (!storageData) return;
+  const d = storageData;
+  const used = Math.max(0, d.total - d.free);
+  const pct = d.total ? Math.min(100, used / d.total * 100) : 0;
+  $('#s-summary').innerHTML = `
+    <div class="s-card"><div class="num">${human(d.free)}</div><div class="lab">Free on server</div><div class="gauge"><i style="width:${(100 - pct).toFixed(1)}%"></i></div></div>
+    <div class="s-card"><div class="num">${human(d.total)}</div><div class="lab">Total capacity</div><div class="gauge"><i style="width:${pct.toFixed(1)}%"></i></div></div>
+    <div class="s-card"><div class="num">${human(d.library_bytes)}</div><div class="lab">Library size</div></div>`;
+
+  const work = d.work || [];
+  $('#work-list').innerHTML = work.length ? work.map(w => {
+    const cat = {download: 'Download', ingest: 'Prepare', failed: 'Failed'}[w.category] || w.category;
+    const orphan = w.job_id == null && w.category !== 'failed';
+    const parts = [];
+    if (w.kind) parts.push(JOB[w.kind] || w.kind);
+    if (w.status) parts.push(STATE[w.status] || w.status);
+    parts.push(human(w.alloc_bytes) + (w.apparent_bytes > w.alloc_bytes ? ` · ${human(w.apparent_bytes)} apparent` : ''));
+    if (w.modified) parts.push(ago(w.modified));
+    if (w.dir) parts.push(w.dir);
+    return `<div class="work" data-id="${esc(w.id)}">
+      <input type="checkbox" class="chk" data-check="${esc(w.id)}" aria-label="Select ${esc(w.name)}">
+      <span class="cat" data-c="${esc(w.category)}">${cat}</span>
+      <div class="info">
+        <div class="name" title="${esc(w.name)}">${esc(w.name)}</div>
+        <div class="meta">${parts.map(esc).join(' · ')}</div>
+      </div>
+      ${orphan ? '<span class="orphan">orphan</span>' : ''}
+      <button class="btn bare" data-work-del="${esc(w.id)}">Delete</button>
+    </div>`;
+  }).join('') : '<p class="muted small">No work directories.</p>';
+
+  const items = S?.items || [];
+  $('#lib-list').innerHTML = items.length ? items.map(i =>
+    `<div class="librow" data-id="${i.id}">
+      <div class="info">
+        <div class="name">${esc(i.title)}</div>
+        <div class="meta">${size(i.size)}${i.version ? ' · ' + esc(i.version) : ''}</div>
+      </div>
+      <button class="btn bare" data-lib-del="${i.id}">Delete</button>
+    </div>`).join('') : '<p class="muted small">Library is empty.</p>';
+
+  $('#del-selected').disabled = !document.querySelector('#work-list input:checked');
+}
+
+async function cleanWork(ids, allOrphans = false) {
+  try {
+    const body = allOrphans ? {all_orphans: true} : {ids: ids || []};
+    const res = await api('/api/storage/clean', {method: 'POST', body: JSON.stringify(body)});
+    toast(`Freed ${human(res.freed)}`);
+    refresh(); refreshStorage();
+  } catch {}
+}
+
+$('#del-selected').onclick = async () => {
+  const ids = [...document.querySelectorAll('#work-list input:checked')].map(i => i.dataset.check);
+  if (!ids.length) return;
+  if (!confirm(`Delete ${ids.length} selected work director${ids.length === 1 ? 'y' : 'ies'}?`)) return;
+  await cleanWork(ids);
+};
+$('#clean-orphans').onclick = async () => {
+  if (!confirm('Delete all orphaned work directories?')) return;
+  await cleanWork(null, true);
+};
+$('#storage').addEventListener('change', e => {
+  if (e.target.matches('[data-check]')) $('#del-selected').disabled = !document.querySelector('#work-list input:checked');
+});
+$('#storage').addEventListener('click', async e => {
+  const del = e.target.closest('[data-work-del]');
+  if (del) {
+    if (!confirm('Delete this work directory and its files?')) return;
+    await cleanWork([del.dataset.workDel]);
+    return;
+  }
+  const libdel = e.target.closest('[data-lib-del]');
+  if (libdel) {
+    const it = S.items.find(x => x.id === +libdel.dataset.libDel);
+    if (!confirm(`Remove “${it?.title || 'this item'}” from the library? It stays installed on the console.`)) return;
+    await api(`/api/items/${+libdel.dataset.libDel}`, {method: 'DELETE'});
+    refresh(); refreshStorage(); toast('Removed from library');
+  }
+});
+
+const urlOk = () => /^https?:\/\/\S+\.\S+/i.test($('#url').value.trim());
+$('#url').addEventListener('input', () => { $('#url-go').disabled = !urlOk(); });
+$('#f-url').onsubmit = async e => {
+  e.preventDefault();
+  const go = $('#url-go');
+  if (!urlOk() || go.classList.contains('busy')) return;
+  go.classList.add('busy'); go.disabled = true; go.querySelector('span').textContent = 'Starting…';
+  try {
+    await api('/api/download', {method: 'POST', body: JSON.stringify({url: $('#url').value.trim()})});
+    refresh(); $('#url').value = ''; toast('Download started');
+  } catch {} finally {
+    go.classList.remove('busy'); go.querySelector('span').textContent = 'Download'; go.disabled = !urlOk();
+  }
+};
+
+// uploads: picker, drop button, and a page-wide drop target
+function upload(files) {
+  for (const f of files) {
+    const row = document.createElement('div');
+    row.innerHTML = `<span>${esc(f.name)}</span><span class="muted">0%</span>`;
+    $('#uploads').append(row);
+    const x = new XMLHttpRequest();
+    x.open('PUT', '/api/upload/' + encodeURIComponent(f.name));
+    x.upload.onprogress = e => row.lastChild.textContent = Math.round(e.loaded / e.total * 100) + '%';
+    x.onload = () => { row.lastChild.textContent = x.status < 300 ? 'uploaded, preparing' : 'upload failed'; setTimeout(() => row.remove(), 8000); };
+    x.onerror = () => row.lastChild.textContent = 'upload failed';
+    x.send(f);
+  }
+}
+$('#drop').onclick = () => $('#pick').click();
+$('#pick').onchange = e => { upload(e.target.files); e.target.value = ''; };
+let dragDepth = 0;
+let innerDrag = false;
+addEventListener('dragstart', () => innerDrag = true);
+addEventListener('dragend', () => innerDrag = false);
+addEventListener('dragenter', e => { if (!innerDrag && e.dataTransfer?.types.includes('Files')) { dragDepth++; $('#dropzone').classList.add('on'); } });
+addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('#dropzone').classList.remove('on'); } });
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', e => { e.preventDefault(); dragDepth = 0; $('#dropzone').classList.remove('on'); if (!innerDrag && e.dataTransfer.files.length) upload(e.dataTransfer.files); innerDrag = false; });
+
+// settings drawer
+const dlg = $('#settings');
+function openSettings() {
+  for (const [k, v] of Object.entries(S?.settings || {})) { const el = dlg.querySelector(`[name=${k}]`); if (el) el.value = v; }
+  dlg.querySelector('[name=ftp_pass]').value = '';
+  dlg.showModal(); $('#s-host').focus();
+}
+document.addEventListener('click', e => { if (e.target.closest('#open-settings,[data-open-settings]')) openSettings(); });
+function closeDrawer() {
+  if (!dlg.open || dlg.dataset.closing) return;
+  if (reduceMotion.matches) return dlg.close();
+  dlg.dataset.closing = 1;
+  Promise.all([
+    dlg.animate([{transform: 'none'}, {transform: 'translateX(100%)'}], {duration: 260, easing: 'cubic-bezier(.4,0,1,1)'}).finished,
+  ]).then(() => { delete dlg.dataset.closing; dlg.close(); });
+}
+dlg.addEventListener('click', e => { if (e.target === dlg) closeDrawer(); });
+dlg.addEventListener('cancel', e => { e.preventDefault(); closeDrawer(); });
+$('#f-set').addEventListener('submit', async e => {
+  e.preventDefault();
+  if (e.submitter?.value !== 'save') return closeDrawer();
+  await api('/api/settings', {method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(e.target)))});
+  refresh(); closeDrawer(); toast('Settings saved');
+});
+
+
+// ---------- mouse: tiles tilt toward the cursor, a soft light trails it ----------
+const finePointer = matchMedia('(hover: hover) and (pointer: fine)');
+const pointerFx = () => finePointer.matches && !reduceMotion.matches;
+
+let tiltTile = null, tiltFrame = 0, tiltEvent = null;
+function applyTilt() {
+  tiltFrame = 0;
+  const e = tiltEvent, t = tiltTile; if (!t || !e) return;
+  const r = t.getBoundingClientRect();
+  const px = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+  const py = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+  const max = t.getAttribute('aria-selected') === 'true' ? 9 : 13;
+  t.style.setProperty('--ry', `${((px - .5) * 2 * max).toFixed(2)}deg`);
+  t.style.setProperty('--rx', `${((.5 - py) * 2 * max).toFixed(2)}deg`);
+  t.style.setProperty('--gx', `${(px * 100).toFixed(1)}%`);
+  t.style.setProperty('--gy', `${(py * 100).toFixed(1)}%`);
+  t.style.setProperty('--go', '1');
+}
+function releaseTilt(t) {
+  if (!t) return;
+  t.classList.remove('tracking');
+  for (const v of ['--rx', '--ry', '--go']) t.style.removeProperty(v);   // eases back via the .face transition
+}
+$('#shelf').addEventListener('pointermove', e => {
+  if (!pointerFx()) return;
+  const t = e.target.closest('.tile[data-id]');
+  if (t !== tiltTile) { releaseTilt(tiltTile); tiltTile = t; }
+  if (!t) return;
+  // follow closely while moving; the .face transition smooths the jitter
+  requestAnimationFrame(() => t.classList.add('tracking'));
+  tiltEvent = e;
+  if (!tiltFrame) tiltFrame = requestAnimationFrame(applyTilt);
+});
+$('#shelf').addEventListener('pointerleave', () => { releaseTilt(tiltTile); tiltTile = null; });
+
+// Background light: eased toward the pointer every frame, stops when it catches up.
+let lightX = innerWidth / 2, lightY = innerHeight * .3, goalX = lightX, goalY = lightY, lightFrame = 0;
+function stepLight() {
+  lightX += (goalX - lightX) * .12; lightY += (goalY - lightY) * .12;
+  document.body.style.setProperty('--mx', `${lightX.toFixed(1)}px`);
+  document.body.style.setProperty('--my', `${lightY.toFixed(1)}px`);
+  lightFrame = Math.abs(goalX - lightX) + Math.abs(goalY - lightY) > .5 ? requestAnimationFrame(stepLight) : 0;
+}
+addEventListener('pointermove', e => {
+  if (!pointerFx() || e.pointerType !== 'mouse') return;
+  goalX = e.clientX; goalY = e.clientY;
+  document.body.classList.add('lit');
+  if (!lightFrame) lightFrame = requestAnimationFrame(stepLight);
+}, {passive: true});
+document.documentElement.addEventListener('pointerleave', () => document.body.classList.remove('lit'));
+
+refresh(); setInterval(refresh, 2500);
+</script>
+</body>
+</html>

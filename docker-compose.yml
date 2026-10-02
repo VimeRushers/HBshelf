@@ -1,0 +1,30 @@
+name: shelf
+services:
+  shelf:
+    build: ./app
+    image: shelf:latest
+    container_name: shelf
+    restart: unless-stopped
+    user: "1000:1000"
+    env_file: .env
+    ports:
+      # 0.0.0.0 on purpose: the console on the LAN downloads PKGs from here (RPI / FPKGi).
+      - "${SHELF_PORT:-8420}:8420"
+    environment:
+      CATALOG_PATH: /app/catalog/GAMES.json
+      ARIA2_CONN: "8"
+    volumes:
+      - ${SHELF_DATA:-./shelf-data}:/data
+      - ./catalog:/app/catalog:ro
+    networks:
+      default:
+      # Optional external reverse-proxy network (set PROXY_NETWORK; alias is "shelf").
+      proxy:
+        aliases: [shelf]
+    mem_limit: 2g
+    cpus: 1.5
+
+networks:
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:-proxy}

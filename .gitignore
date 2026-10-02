@@ -1,0 +1,37 @@
+# secrets / local config
+.env
+.env.*
+!.env.example
+
+# operator-supplied catalog + redistributable-unsafe binaries
+catalog/*
+!catalog/.gitkeep
+GAMES.json
+*.pkg
+*.zip
+*.7z
+*.rar
+
+# runtime data / database
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.part
+*.aria2
+cookies.txt
+aria2.log
+shelf-data/
+
+# python / tooling
+__pycache__/
+*.pyc
+.venv/
+
+# editors / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
