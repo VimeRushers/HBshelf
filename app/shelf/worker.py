@@ -15,7 +15,7 @@ from . import catalog, db
 from .config import ARIA2_CONN, FAILED, INBOX, MIN_DOWNLOAD_RATE, STALL_SECONDS, WORK
 from .convert import ConvertError, Converter, group_entries, need_space
 from .delivery import Cancelled, DeliveryError, Paused, auto_install, ftp_upload, rpi_install
-from .downloads import DownloadError, download_session, head_size, is_archive_url, is_aria2, write_cookies
+from .downloads import DownloadError, archive_direct_url, archive_url_ok, download_session, head_size, is_archive_url, is_aria2, write_cookies
 
 log = logging.getLogger("shelf")
 
@@ -230,6 +230,11 @@ def download_aria2(job, report) -> Path:
             have_cookie = write_cookies(session, cookie_file)
             if not total:
                 total = head_size(url, session, {})
+            if not archive_url_ok(url, session):
+                direct = archive_direct_url(url, session)
+                if direct:
+                    log.warning("archive.org redirect target unhealthy; using direct server %s", urllib.parse.urlsplit(direct).netloc)
+                    url = direct
     elif not total:
         with requests.Session() as session:
             total = head_size(url, session, {})

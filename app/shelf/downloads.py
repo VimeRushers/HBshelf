@@ -96,6 +96,39 @@ def write_cookies(session, path) -> bool:
     return True
 
 
+def archive_direct_url(url, session) -> str | None:
+    """Resolve archive.org/download/<item>/<file> to its real storage server.
+
+    archive.org 302-redirects /download/ to a CDN node (dnXXXX) that is sometimes broken
+    and returns HTTP 500; the item's storage server (iaXXXX) keeps working. Using it directly
+    avoids those dead redirects.
+    """
+    parts = [x for x in urlsplit(url).path.split("/") if x]
+    if len(parts) < 3 or parts[0] != "download":
+        return None
+    item, filename = parts[1], "/".join(parts[2:])
+    try:
+        r = session.get(f"https://archive.org/metadata/{item}", timeout=(10, 30))
+        r.raise_for_status()
+        meta = r.json()
+    except (requests.RequestException, ValueError):
+        return None
+    server = meta.get("server") or meta.get("d1")
+    directory = meta.get("dir")
+    if not server or not directory:
+        return None
+    return f"https://{server}{directory}/{filename}"
+
+
+def archive_url_ok(url, session) -> bool:
+    """Cheap probe: is the /download/ URL (including its redirect target) serving data right now?"""
+    try:
+        r = session.get(url, headers={"Range": "bytes=0-0"}, stream=True, timeout=(10, 20))
+        return r.status_code < 400
+    except requests.RequestException:
+        return False
+
+
 def head_size(url, session, headers) -> int:
     try:
         r = session.head(url, headers=headers, timeout=30, allow_redirects=True)
