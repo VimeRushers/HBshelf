@@ -203,3 +203,73 @@ def auto_install(item: dict, s: dict, report, cancelled=lambda: False):
     if probe_http(s["ps4_host"], int(s["rpi_port"] or 0)):
         return rpi_install(item, s, report, cancelled)
     return ftp_upload(item, s, report, cancelled)
+
+
+def _ftp_login(s: dict, timeout=5) -> ftplib.FTP:
+    ftp = ftplib.FTP()
+    ftp.connect(s["ps4_host"], int(s["ftp_port"] or 0), timeout=timeout)
+    ftp.login(s["ftp_user"] or "anonymous", s["ftp_pass"])
+    ftp.set_pasv(True)
+    return ftp
+
+
+def _ftp_close(ftp: ftplib.FTP):
+    try:
+        ftp.quit()
+    except Exception:
+        try:
+            ftp.close()
+        except Exception:
+            pass
+
+
+def console_inventory(s: dict, timeout=5) -> dict:
+    """Best-effort console inventory: an unreachable or partial FTP server yields empty lists."""
+    empty = {"reachable": False, "installed": [], "pkg": []}
+    if not s.get("ps4_host"):
+        return empty
+    try:
+        ftp = _ftp_login(s, timeout)
+    except ftplib.all_errors:
+        return empty
+    try:
+        installed = []
+        try:
+            installed = sorted({posixpath.basename(p) for p in ftp.nlst("/user/appmeta") if posixpath.basename(p)})
+        except ftplib.all_errors:
+            pass
+        pkg = []
+        d = (s.get("ftp_dir") or "/").rstrip("/") or "/"
+        try:
+            for path in ftp.nlst(d):
+                name = posixpath.basename(path)
+                if not name or name in (".", ".."):
+                    continue
+                pkg.append({"name": name, "size": remote_size(ftp, posixpath.join(d, name))})
+        except ftplib.all_errors:
+            pass
+        pkg.sort(key=lambda e: e["name"].lower())
+        return {"reachable": True, "installed": installed, "pkg": pkg}
+    finally:
+        _ftp_close(ftp)
+
+
+def console_delete(s: dict, names: list, timeout=15) -> list:
+    if not s.get("ps4_host"):
+        return []
+    try:
+        ftp = _ftp_login(s, timeout)
+    except ftplib.all_errors:
+        return []
+    removed = []
+    try:
+        d = (s.get("ftp_dir") or "/").rstrip("/") or "/"
+        for name in names:
+            try:
+                ftp.delete(posixpath.join(d, name))
+                removed.append(name)
+            except ftplib.all_errors:
+                continue
+    finally:
+        _ftp_close(ftp)
+    return removed

@@ -12,14 +12,25 @@ from pathlib import Path
 import requests
 
 from . import catalog, db
-from .config import ARIA2_CONN, FAILED, INBOX, MIN_DOWNLOAD_RATE, STALL_SECONDS, WORK
+from .config import (ARIA2_CONN, FAILED, FINISH_NEAR_COMPLETE_PCT, INBOX, MAX_RETRIES, MIN_DOWNLOAD_RATE,
+                     RETRY_DELAYS, STALL_SECONDS, VERIFY_CHECKSUM, WORK)
 from .convert import ConvertError, Converter, group_entries, need_space
 from .delivery import Cancelled, DeliveryError, Paused, auto_install, ftp_upload, rpi_install
-from .downloads import DownloadError, archive_direct_url, archive_url_ok, download_session, head_size, is_archive_url, is_aria2, write_cookies
+from .downloads import (DownloadError, TransientDownloadError, archive_candidates, archive_checksum, archive_url_ok,
+                        download_session, head_size, is_archive_url, is_aria2, verify_checksum, write_cookies)
 
 log = logging.getLogger("shelf")
 
 _procs = {}
+
+
+def _allocated(path) -> int:
+    # aria2 writes sparse files (--file-allocation=none): st_size jumps to ~full immediately,
+    # so use allocated blocks for real progress.
+    try:
+        return path.stat().st_blocks * 512
+    except OSError:
+        return 0
 
 
 def work_dir(job_id, created=None) -> Path:
@@ -32,7 +43,7 @@ def work_dir(job_id, created=None) -> Path:
 def remove_work_dir(job_id, created=None):
     shutil.rmtree(work_dir(job_id, created), ignore_errors=True)
 
-ARIA2_RETRY_CODES = {1, 4, 6, 7, 8}
+ARIA2_RETRY_CODES = {1, 4, 5, 6, 7, 8, 22}
 ARIA2_ERRORS = {
     1: "download failed (aria2 error 1)",
     3: "the download server said the file was not found (HTTP 404)",
@@ -141,6 +152,8 @@ def download(job, report) -> Path:
         if r.status_code == 416 and partial:
             final = partial.with_suffix("")
             partial.rename(final)
+            if archive and VERIFY_CHECKSUM:
+                verify_checksum(final, archive_checksum(url, final.name))
             return dest_dir
         r.raise_for_status()
         resumed = partial is not None and r.status_code == 206
@@ -163,8 +176,11 @@ def download(job, report) -> Path:
                 have += len(chunk)
                 report(have / total if total else None, f"downloading {name}: {have / 2**20:.0f}/{total / 2**20:.0f} MiB")
     if total and have < total:
-        raise ConvertError("download ended early; retry to resume")
-    target.rename(dest_dir / name)
+        raise TransientDownloadError("download ended early; retry to resume")
+    final = dest_dir / name
+    target.rename(final)
+    if archive and VERIFY_CHECKSUM:
+        verify_checksum(final, archive_checksum(url, name))
     return dest_dir
 
 
@@ -195,19 +211,19 @@ def _poll_aria2(cmd, job, part, total, name, report) -> int:
                 if status == "cancelled":
                     _stop(proc)
                     raise Cancelled()
-                # aria2 writes sparse files (--file-allocation=none): st_size jumps to ~full
-                # immediately, so use allocated blocks for real progress.
-                st = part.stat() if part.exists() else None
-                size = st.st_blocks * 512 if st else 0
+                size = _allocated(part)
                 now = time.monotonic()
                 if size > last_size:
                     last_size, last_grow = size, now
-                elif now - last_grow > STALL_SECONDS:
-                    _stop(proc)
-                    raise DownloadError(
-                        f"download stalled at {size / 2**20:.0f} MiB (no progress for {STALL_SECONDS}s); "
-                        "the source node is not serving data — retry later"
-                    )
+                else:
+                    # Let a nearly-finished transfer ride out a slow tail instead of failing it.
+                    limit = STALL_SECONDS * 3 if total and size >= total * FINISH_NEAR_COMPLETE_PCT / 100 else STALL_SECONDS
+                    if now - last_grow > limit:
+                        _stop(proc)
+                        raise TransientDownloadError(
+                            f"download stalled at {size / 2**20:.0f} MiB (no progress for {limit}s); "
+                            "the source node is not serving data — retry later"
+                        )
                 report(size / total if total else None,
                        f"downloading {name}: {size / 2**20:.0f}/{total / 2**20:.0f} MiB")
         finally:
@@ -225,41 +241,69 @@ def download_aria2(job, report) -> Path:
     total = int(entry.get("size") or 0) if entry else 0
     cookie_file = dest_dir / "cookies.txt"
     have_cookie = False
+    name = _filename(url)
+    candidates = [url]
+    expected = {}
     if archive:
         with download_session(url) as session:
             have_cookie = write_cookies(session, cookie_file)
             if not total:
                 total = head_size(url, session, {})
-            if not archive_url_ok(url, session):
-                direct = archive_direct_url(url, session)
-                if direct:
-                    log.warning("archive.org redirect target unhealthy; using direct server %s", urllib.parse.urlsplit(direct).netloc)
-                    url = direct
+            direct = archive_candidates(url, session)[1:]
+            if archive_url_ok(url, session):
+                candidates = [url] + direct
+            else:
+                healthy = [u for u in direct if archive_url_ok(u, session)]
+                candidates = healthy or ([url] + direct)
+                if healthy:
+                    log.warning("archive.org redirect target unhealthy; using direct server(s) %s",
+                                ", ".join(urllib.parse.urlsplit(u).netloc for u in healthy))
+            if VERIFY_CHECKSUM:
+                expected = archive_checksum(url, name, session)
     elif not total:
         with requests.Session() as session:
             total = head_size(url, session, {})
     if total:
         need_space(WORK, total)
-    name = _filename(url)
     part = dest_dir / f"{name}.part"
+    near_complete = bool(total) and part.exists() and _allocated(part) >= total * FINISH_NEAR_COMPLETE_PCT / 100
     common = ["aria2c", "--continue=true", "--auto-file-renaming=false", "--allow-overwrite=true",
               "--file-allocation=none", f"--max-connection-per-server={ARIA2_CONN}",
               "--min-split-size=8M", "--disable-ipv6=true", "--max-tries=10", "--retry-wait=5",
               "--timeout=60", "--connect-timeout=20", "--disk-cache=32M", "--auto-save-interval=10",
-              f"--lowest-speed-limit={MIN_DOWNLOAD_RATE}",
               f"--out={name}.part", f"--dir={dest_dir}", "--user-agent=Shelf/1.0"]
+    if not near_complete:
+        common.append(f"--lowest-speed-limit={MIN_DOWNLOAD_RATE}")
     if have_cookie:
         common.append(f"--load-cookies={cookie_file}")
     rc = -1
+    last = None
     try:
-        for split in dict.fromkeys((ARIA2_CONN, 1)):
-            rc = _poll_aria2(common + [f"--split={split}", url], job, part, total, name, report)
-            status = _job_status(job["id"])
-            if status == "paused":
-                raise Paused()
-            if status == "cancelled":
-                raise Cancelled()
-            if rc == 0 or split == 1 or rc not in ARIA2_RETRY_CODES:
+        for candidate in candidates:
+            rc = -1
+            node_failed = False
+            for split in dict.fromkeys((ARIA2_CONN, 1)):
+                try:
+                    rc = _poll_aria2(common + [f"--split={split}", candidate], job, part, total, name, report)
+                except TransientDownloadError as e:
+                    node_failed, last = True, e
+                    break
+                status = _job_status(job["id"])
+                if status == "paused":
+                    raise Paused()
+                if status == "cancelled":
+                    raise Cancelled()
+                if rc == 0 or split == 1 or rc not in ARIA2_RETRY_CODES:
+                    break
+            if rc == 0:
+                break
+            if node_failed:
+                if candidate == candidates[-1]:
+                    raise last or TransientDownloadError("all archive.org servers failed")
+                log.warning("archive.org node %s failed (%s); trying next server",
+                            urllib.parse.urlsplit(candidate).netloc, last)
+                continue
+            if rc not in ARIA2_RETRY_CODES:
                 break
     finally:
         cookie_file.unlink(missing_ok=True)
@@ -269,14 +313,17 @@ def download_aria2(job, report) -> Path:
             log.warning("aria2 exit %s, args %s, log tail:\n%s", rc, args, (dest_dir / "aria2.log").read_text(errors="replace")[-1200:])
         except OSError:
             pass
-        raise DownloadError(ARIA2_ERRORS.get(rc, f"download failed (aria2 error {rc})"))
+        message = ARIA2_ERRORS.get(rc, f"download failed (aria2 error {rc})")
+        raise TransientDownloadError(message) if rc in ARIA2_RETRY_CODES else DownloadError(message)
     (dest_dir / f"{name}.part.aria2").unlink(missing_ok=True)
     if not part.exists():
         raise DownloadError("aria2 reported success but produced no file")
     final = dest_dir / name
     part.rename(final)
     if total and final.stat().st_size < total:
-        raise ConvertError("download ended early; retry to resume")
+        raise TransientDownloadError("download ended early; retry to resume")
+    if expected:
+        verify_checksum(final, expected)
     return dest_dir
 
 
@@ -288,7 +335,8 @@ def run_fetch(job):
         except Paused:
             raise
         except Cancelled:
-            remove_work_dir(job["id"], job["created"])
+            # Cancel is non-destructive: the .part/.aria2 files stay for a later resume, and are
+            # removed only from the Storage tab (POST /api/storage/clean or /api/jobs/{id}/delete).
             raise
         except Exception:
             d = work_dir(job["id"], job["created"])
@@ -347,8 +395,59 @@ def run_send(job):
     db.finish_job(job["id"], "done", progress=1)
 
 
+TRANSIENT_MESSAGES = ("too slow", "bad response header", "ended early", "checksum mismatch",
+                      "stalled", "retry to resume", "connection", "timed out", "temporarily unavailable")
+
+
+def is_transient(exc) -> bool:
+    if isinstance(exc, (Paused, Cancelled)):
+        return False
+    if isinstance(exc, TransientDownloadError):
+        return True
+    if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+        return True
+    if isinstance(exc, requests.HTTPError):
+        return exc.response is not None and exc.response.status_code >= 500
+    if isinstance(exc, requests.RequestException):
+        return True
+    if isinstance(exc, (DownloadError, ConvertError, OSError)):
+        text = str(exc).lower()
+        return any(m in text for m in TRANSIENT_MESSAGES)
+    return False
+
+
+def _handle_failure(job, exc) -> bool:
+    """Record a failed download attempt and requeue it with backoff when transient."""
+    if job["kind"] != "download":
+        return False
+    attempts = int(job.get("attempts") or 0) + 1
+    if attempts <= MAX_RETRIES and is_transient(exc):
+        delay = RETRY_DELAYS[min(attempts - 1, len(RETRY_DELAYS) - 1)]
+        db.update_job(job["id"], status="queued", attempts=attempts, retry_at=time.time() + delay,
+                      message=f"{str(exc)[:400]} (retry {attempts}/{MAX_RETRIES} in {delay}s)")
+        log.warning("job %s transient failure (attempt %s/%s, retry in %ss): %s",
+                    job["id"], attempts, MAX_RETRIES, delay, exc)
+        return True
+    db.update_job(job["id"], attempts=attempts)
+    return False
+
+
+def _sends_running() -> bool:
+    return bool(db.q("SELECT 1 FROM jobs WHERE status='running' AND kind IN ('send_ftp','send_rpi','send_auto') LIMIT 1"))
+
+
+def _pause_downloads_for_send() -> bool:
+    if str(db.settings().get("pause_download_while_sending", "1")).lower() not in ("1", "true", "yes", "on"):
+        return False
+    return _sends_running()
+
+
 def loop(kinds, fn):
+    fetch = "download" in kinds
     while True:
+        if fetch and _pause_downloads_for_send():
+            time.sleep(2)
+            continue
         job = db.claim_job(kinds)
         if not job:
             time.sleep(2)
@@ -359,19 +458,22 @@ def loop(kinds, fn):
             continue
         except Cancelled:
             db.finish_job(job["id"], "failed", message="Cancelled")
-        except requests.HTTPError as e:
-            code = e.response.status_code if e.response is not None else "?"
-            db.finish_job(job["id"], "failed", message=f"The link answered HTTP {code} ({e.response.reason if e.response is not None else 'error'}). Check the address.")
-        except requests.ConnectionError:
-            db.finish_job(job["id"], "failed", message="Couldn't connect to the download server. Check the link and the server's internet access.")
-        except requests.Timeout:
-            db.finish_job(job["id"], "failed", message="The download server stopped responding. Retry to resume.")
-        except (ConvertError, DeliveryError, DownloadError, requests.RequestException, OSError) as e:
-            log.warning("job %s %s failed: %s", job["id"], job["kind"], e)
-            db.finish_job(job["id"], "failed", message=str(e)[:500])
         except Exception as e:
-            log.error(traceback.format_exc())
-            db.finish_job(job["id"], "failed", message=f"{type(e).__name__}: {e}"[:500])
+            if _handle_failure(job, e):
+                continue
+            if isinstance(e, requests.HTTPError):
+                code = e.response.status_code if e.response is not None else "?"
+                db.finish_job(job["id"], "failed", message=f"The link answered HTTP {code} ({e.response.reason if e.response is not None else 'error'}). Check the address.")
+            elif isinstance(e, requests.ConnectionError):
+                db.finish_job(job["id"], "failed", message="Couldn't connect to the download server. Check the link and the server's internet access.")
+            elif isinstance(e, requests.Timeout):
+                db.finish_job(job["id"], "failed", message="The download server stopped responding. Retry to resume.")
+            elif isinstance(e, (ConvertError, DeliveryError, DownloadError, requests.RequestException, OSError)):
+                log.warning("job %s %s failed: %s", job["id"], job["kind"], e)
+                db.finish_job(job["id"], "failed", message=str(e)[:500])
+            else:
+                log.error(traceback.format_exc())
+                db.finish_job(job["id"], "failed", message=f"{type(e).__name__}: {e}"[:500])
 
 
 def start():

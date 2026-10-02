@@ -1,6 +1,8 @@
 """Download sessions, including cookie authentication for Internet Archive."""
+import hashlib
 import os
 import shutil
+import zlib
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -12,6 +14,10 @@ from .config import ALLOWED_DOWNLOAD_HOSTS
 
 class DownloadError(Exception):
     pass
+
+
+class TransientDownloadError(DownloadError):
+    """A failure that is worth retrying (bad node, network blip, corrupt transfer)."""
 
 
 def host_allowed(url) -> bool:
@@ -96,28 +102,104 @@ def write_cookies(session, path) -> bool:
     return True
 
 
-def archive_direct_url(url, session) -> str | None:
-    """Resolve archive.org/download/<item>/<file> to its real storage server.
+def archive_item_file(url):
+    """Split archive.org/download/<item>/<file...> into (item, filename), or None."""
+    parts = [x for x in urlsplit(url).path.split("/") if x]
+    if len(parts) < 3 or parts[0] != "download":
+        return None
+    return parts[1], "/".join(parts[2:])
+
+
+def archive_metadata(item, session=None) -> dict:
+    try:
+        r = (session or requests).get(f"https://archive.org/metadata/{item}", timeout=(10, 30))
+        r.raise_for_status()
+        meta = r.json()
+    except (requests.RequestException, ValueError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def archive_servers(meta) -> list:
+    """Storage servers for an item, most-preferred first, deduplicated."""
+    out = []
+    for key in ("server", "d1", "d2"):
+        s = meta.get(key)
+        if s and s not in out:
+            out.append(s)
+    for s in meta.get("workable_servers") or ():
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def archive_candidates(url, session=None) -> list:
+    """Ordered URLs to try: the /download/ redirect first, then each storage server."""
+    info = archive_item_file(url)
+    if not info:
+        return [url]
+    item, filename = info
+    meta = archive_metadata(item, session)
+    directory = meta.get("dir")
+    out = [url]
+    if directory:
+        for server in archive_servers(meta):
+            out.append(f"https://{server}{directory}/{filename}")
+    return out
+
+
+def archive_direct_url(url, session=None) -> str | None:
+    """Resolve archive.org/download/<item>/<file> to its first real storage server.
 
     archive.org 302-redirects /download/ to a CDN node (dnXXXX) that is sometimes broken
     and returns HTTP 500; the item's storage server (iaXXXX) keeps working. Using it directly
     avoids those dead redirects.
     """
-    parts = [x for x in urlsplit(url).path.split("/") if x]
-    if len(parts) < 3 or parts[0] != "download":
+    info = archive_item_file(url)
+    if not info:
         return None
-    item, filename = parts[1], "/".join(parts[2:])
-    try:
-        r = session.get(f"https://archive.org/metadata/{item}", timeout=(10, 30))
-        r.raise_for_status()
-        meta = r.json()
-    except (requests.RequestException, ValueError):
-        return None
-    server = meta.get("server") or meta.get("d1")
+    item, filename = info
+    meta = archive_metadata(item, session)
     directory = meta.get("dir")
-    if not server or not directory:
+    servers = archive_servers(meta)
+    if not servers or not directory:
         return None
-    return f"https://{server}{directory}/{filename}"
+    return f"https://{servers[0]}{directory}/{filename}"
+
+
+def archive_checksum(url, filename=None, session=None) -> dict:
+    """Expected hashes for an archive.org file, from the item metadata (empty if unknown)."""
+    info = archive_item_file(url)
+    if not info:
+        return {}
+    item, default = info
+    want = filename or default
+    meta = archive_metadata(item, session)
+    for f in meta.get("files") or ():
+        name = f.get("name") or ""
+        if name == want or Path(name).name == Path(want).name:
+            return {k: f[k] for k in ("md5", "sha1", "crc32") if f.get(k)}
+    return {}
+
+
+def verify_checksum(path, expected: dict):
+    """Raise a transient DownloadError if the file does not match the expected hashes.
+
+    The partial/finished file is intentionally left on disk: the retry machinery resumes or
+    re-downloads from it, and a mismatch is debugging signal.
+    """
+    if not expected:
+        return
+    md5, sha1, crc = hashlib.md5(), hashlib.sha1(), 0
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(4 * 2**20), b""):
+            md5.update(chunk)
+            sha1.update(chunk)
+            crc = zlib.crc32(chunk, crc)
+    actual = {"md5": md5.hexdigest(), "sha1": sha1.hexdigest(), "crc32": format(crc & 0xFFFFFFFF, "08x")}
+    for algo, want in expected.items():
+        if want and str(actual.get(algo, "")).lower() != str(want).lower():
+            raise TransientDownloadError(f"checksum mismatch ({algo}) for {Path(path).name}; the downloaded file is corrupt")
 
 
 def archive_url_ok(url, session) -> bool:

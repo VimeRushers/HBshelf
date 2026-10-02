@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from . import catalog, db, worker
 from .config import ALLOW_ANY_DOWNLOAD, DATA, FAILED, ICONS, INBOX, LIBRARY, MAX_UPLOAD_BYTES, MAX_UPLOAD_GB, WORK
 from .convert import ConvertError, dir_size, need_space
-from .delivery import pkg_url, probe, probe_http
+from .delivery import console_delete, console_inventory, pkg_url, probe, probe_http
 from .downloads import host_allowed
 
 logging.basicConfig(level=logging.INFO)
@@ -63,7 +63,7 @@ def state():
     }
 
 
-def _catalog_entry(entry, jobs, items):
+def _catalog_entry(entry, jobs, items, installed=frozenset()):
     job = jobs.get(entry["url"])
     item = items.get(entry["url"])
     status = ""
@@ -74,7 +74,20 @@ def _catalog_entry(entry, jobs, items):
     elif job:
         status = job["status"]
     item_id = item["id"] if item else (job["item_id"] if job else None)
-    return {**entry, "status": status, "job_id": job["id"] if job else None, "item_id": item_id}
+    return {**entry, "status": status, "job_id": job["id"] if job else None, "item_id": item_id,
+            "on_console": entry["title_id"] in installed}
+
+
+_console = {"at": 0.0, "installed": frozenset()}
+
+
+def _installed_ids(refresh=False) -> frozenset:
+    """Console title ids, cached briefly so a catalog page does not FTP on every request."""
+    now = time.monotonic()
+    if refresh or now - _console["at"] >= 60:
+        ids = console_inventory(db.settings())["installed"]
+        _console.update(at=now, installed=frozenset(ids))
+    return _console["installed"]
 
 
 @app.get("/api/catalog")
@@ -83,19 +96,46 @@ def api_catalog(q: str = "", region: str = "", limit: int | None = None, offset:
     items = {i["source_url"]: i for i in db.q("SELECT id, source_url FROM items WHERE source_url IS NOT NULL AND source_url != '' ORDER BY id")}
     needle = q.strip().lower()
     reg = region.strip().upper()
+    installed = _installed_ids()
     out = []
     for entry in catalog.load():
         if needle and needle not in entry["name"].lower() and needle not in entry["title_id"].lower():
             continue
         if reg and entry["region"].upper() != reg:
             continue
-        out.append(_catalog_entry(entry, jobs, items))
+        out.append(_catalog_entry(entry, jobs, items, installed))
     count = len(out)
     if offset:
         out = out[offset:]
     if limit is not None:
         out = out[:limit]
     return {"count": count, "entries": out}
+
+
+@app.get("/api/console")
+def api_console():
+    s = db.settings()
+    inv = console_inventory(s)
+    titles = {r["title_id"]: r["title"] for r in db.q("SELECT title_id, title FROM items WHERE title_id != ''")}
+    installed = [{"title_id": t, "name": titles.get(t) or t} for t in inv["installed"]]
+    return {"reachable": inv["reachable"], "host": s["ps4_host"], "installed": installed,
+            "pkg": inv["pkg"], "pkg_bytes": sum(p["size"] for p in inv["pkg"])}
+
+
+class ConsoleDelete(BaseModel):
+    names: list[str]
+
+
+def _unsafe_name(name: str) -> bool:
+    return not name or "/" in name or "\\" in name or ".." in name
+
+
+@app.post("/api/console/delete")
+def api_console_delete(body: ConsoleDelete):
+    for name in body.names:
+        if _unsafe_name(name):
+            raise HTTPException(400, f"invalid file name: {name!r}")
+    return {"removed": console_delete(db.settings(), body.names)}
 
 
 class Url(BaseModel):
@@ -196,7 +236,7 @@ def retry(job_id: int):
     rows = db.q("SELECT id FROM jobs WHERE id=?", job_id)
     if not rows:
         raise HTTPException(404)
-    db.update_job(job_id, status="queued", message="retrying", progress=0)
+    db.update_job(job_id, status="queued", message="retrying", progress=0, attempts=0, retry_at=0)
     return {"ok": True}
 
 
@@ -207,8 +247,8 @@ def cancel(job_id: int):
         raise HTTPException(404)
     status = rows[0]["status"]
     if status in ("queued", "paused"):
+        # Cancel stops the transfer; it never deletes .part/.aria2. Cleanup is Storage-tab only.
         db.update_job(job_id, status="failed", message="Cancelled")
-        worker.remove_work_dir(job_id)
     elif status == "running":
         db.update_job(job_id, status="cancelled", message="Cancelling…")
     return {"ok": True}
@@ -243,7 +283,7 @@ def resume(job_id: int):
     if not rows:
         raise HTTPException(404)
     if rows[0]["status"] == "paused":
-        db.update_job(job_id, status="queued", message="resuming")
+        db.update_job(job_id, status="queued", message="resuming", retry_at=0)
     return {"ok": True}
 
 
@@ -251,6 +291,14 @@ def resume(job_id: int):
 def clear_jobs():
     db.x("DELETE FROM jobs WHERE status IN ('done','failed','cancelled')")
     return {"ok": True}
+
+
+@app.get("/api/jobs")
+def api_jobs(limit: int = 50):
+    limit = min(max(limit, 1), 500)
+    return {"jobs": db.q(
+        "SELECT id, kind, item_id, status, progress, message, source, attempts, retry_at, created, updated "
+        "FROM jobs ORDER BY id DESC LIMIT ?", limit)}
 
 
 def _storage_dirs():
@@ -357,10 +405,29 @@ def storage_clean(body: Clean):
     return {"removed": removed, "freed": freed}
 
 
+def _bool_setting(value) -> str:
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return "1"
+    if text in ("0", "false", "no", "off"):
+        return "0"
+    raise HTTPException(400, "pause_download_while_sending must be a boolean")
+
+
 @app.post("/api/settings")
 def save_settings(values: dict):
+    _validate_settings(values)
+    db.save_settings(values)
+    return {"ok": True}
+
+
+def _validate_settings(values: dict):
     if values.get("auto_send", "none") not in ("none", "ftp", "rpi", "auto"):
         raise HTTPException(400, "auto_send must be none, ftp, rpi or auto")
+    if "pause_download_while_sending" in values:
+        values["pause_download_while_sending"] = _bool_setting(values["pause_download_while_sending"])
     for key in ("ftp_port", "rpi_port"):
         if str(values.get(key, "")).strip():
             try:
@@ -377,10 +444,31 @@ def save_settings(values: dict):
         u = str(values["public_url"]).strip()
         if u and not re.match(r"^https?://", u):
             raise HTTPException(400, "public_url must start with http:// or https://")
+    if "notify_webhook" in values:
+        u = str(values["notify_webhook"]).strip()
+        if u and not re.match(r"^https?://", u):
+            raise HTTPException(400, "notify_webhook must start with http:// or https://")
     if values.get("ftp_pass") == "":
         values.pop("ftp_pass")  # blank field = keep the stored password
+
+
+@app.get("/api/config/export")
+def config_export():
+    return {"settings": {k: v for k, v in db.settings().items() if k != "ftp_pass"}, "exported_at": time.time()}
+
+
+@app.post("/api/config/import")
+def config_import(values: dict):
+    _validate_settings(values)
     db.save_settings(values)
     return {"ok": True}
+
+
+@app.post("/api/db/backup")
+def db_backup():
+    dest = DATA / "backups" / f"shelf-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}.db"
+    db.backup(dest)
+    return {"file": str(dest), "size": dest.stat().st_size}
 
 
 @app.api_route("/pkg/{item_id}/{name}", methods=["GET", "HEAD"])

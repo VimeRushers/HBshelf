@@ -249,6 +249,50 @@ dialog .foot{display:flex;gap:10px;margin-top:24px;position:sticky;bottom:-24px;
 .work .cat[data-c=failed]{color:var(--coral);border-color:rgb(255 122 122/.35)}
 .librow{display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1px solid var(--line)}
 .librow:first-child{border-top:0;padding-top:4px}
+.job .rate{grid-column:1/-1;font-size:12.5px;color:var(--mist);font-variant-numeric:tabular-nums}
+.jobtools{display:inline-flex;gap:4px;align-items:center}
+.jobtools .linkish{margin-left:12px}
+.favonly{display:inline-flex;align-items:center;gap:6px;font-size:13.5px;color:var(--mist);cursor:pointer;user-select:none;white-space:nowrap}
+.favonly input{width:16px;height:16px;accent-color:var(--tide);cursor:pointer}
+.card .fav{position:absolute;top:8px;right:8px;z-index:2;width:30px;height:30px;border-radius:8px;border:0;cursor:pointer;display:grid;place-items:center;font-size:17px;line-height:1;color:var(--mist);background:rgb(6 26 63/.62);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);transition:color .2s,background-color .2s,transform .15s var(--ease)}
+.card .fav:hover{color:var(--foam);background:rgb(6 26 63/.85)}
+.card .fav[aria-pressed=true]{color:var(--amber)}
+.card .sel{position:absolute;top:10px;left:8px;z-index:2;width:18px;height:18px;accent-color:var(--tide);cursor:pointer}
+.card .have{align-self:flex-start;font-size:11.5px;color:var(--mint);background:rgb(61 220 151/.08);border:1px solid rgb(61 220 151/.28);border-radius:6px;padding:2px 8px}
+.card .lib{align-self:flex-start;font-size:11.5px;color:var(--mint);background:rgb(61 220 151/.1);border:1px solid rgb(61 220 151/.35);border-radius:6px;padding:2px 8px;font-weight:600}
+.card .oncon{align-self:flex-start;font-size:11.5px;color:var(--tide-hi);background:rgb(47 107 255/.1);border:1px solid rgb(90 139 255/.35);border-radius:6px;padding:2px 8px;font-weight:600}
+
+/* console panel */
+.c-status{display:flex;align-items:center;gap:8px;font-size:14px}
+.c-status .led{width:9px;height:9px;border-radius:50%;background:var(--coral);box-shadow:0 0 0 3px rgb(255 122 122/.15)}
+.c-status[data-r="1"] .led{background:var(--mint);box-shadow:0 0 0 3px rgb(61 220 151/.15)}
+.c-status b{color:var(--foam);font-weight:600}
+.c-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:16px 0 8px}
+.c-head h3{margin:0;font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--mist);font-weight:600}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;align-items:center;gap:7px;background:var(--deep);border:1px solid var(--line);border-radius:8px;padding:4px 10px;font-size:13px;max-width:100%}
+.chip b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip i{font-style:normal;color:var(--mist);font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.pkg{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--line)}
+.pkg:first-child{border-top:0;padding-top:4px}
+.pkg .chk{flex:none;width:16px;height:16px;accent-color:var(--tide);cursor:pointer}
+.pkg .info{flex:1;min-width:0}
+.pkg .name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pkg .meta{font-size:13px;color:var(--mist)}
+
+/* settings tools + history */
+dialog .tools{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+dialog .tools .btn{flex:1;justify-content:center;min-width:120px}
+.hist{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:2px 12px;padding:9px 0;border-top:1px solid var(--line);font-size:13px}
+.hist:first-child{border-top:0}
+.hist .what{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hist .state{font-weight:600;text-align:right}
+.hist .when{color:var(--mist);text-align:right;font-variant-numeric:tabular-nums}
+.hist .detail{grid-column:1/-1;color:var(--mist);font-size:12.5px;overflow-wrap:anywhere}
+.hist[data-s=done] .state{color:var(--mint)}
+.hist[data-s=failed] .state{color:var(--coral)}
+.hist[data-s=running] .state{color:var(--amber)}
+#hist-toggle{margin-top:8px}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
 </head>
@@ -279,6 +323,14 @@ dialog .foot{display:flex;gap:10px;margin-top:24px;position:sticky;bottom:-24px;
         <input id="shop-q" type="search" placeholder="Search the store" autocomplete="off" spellcheck="false">
       </div>
       <select class="field" id="shop-region" aria-label="Region"></select>
+      <select class="field" id="shop-sort" aria-label="Sort">
+        <option value="name">Name A–Z</option>
+        <option value="size-asc">Size ↑</option>
+        <option value="size-desc">Size ↓</option>
+        <option value="newest">Newest</option>
+      </select>
+      <label class="favonly"><input type="checkbox" id="shop-fav"> Favorites only</label>
+      <button class="btn" id="shop-queue" disabled>Queue selected</button>
       <span class="muted small" id="shop-count"></span>
     </div>
     <div class="shopgrid" id="shop-grid"></div>
@@ -295,12 +347,18 @@ dialog .foot{display:flex;gap:10px;margin-top:24px;position:sticky;bottom:-24px;
       <h2>Library items</h2>
       <div id="lib-list"></div>
     </section>
+    <section class="panel">
+      <h2>Console</h2>
+      <div id="console-body"></div>
+    </section>
   </section>
 
   <div class="lower">
     <section class="panel">
-      <h2>Activity <button class="linkish" id="clear" hidden>Clear finished</button></h2>
+      <h2>Activity <span class="jobtools"><button class="linkish" id="pause-all" hidden>Pause all</button><button class="linkish" id="resume-all" hidden>Resume all</button><button class="linkish" id="cancel-all" hidden>Cancel all</button><button class="linkish" id="clear" hidden>Clear finished</button></span></h2>
       <div id="jobs"></div>
+      <button class="linkish" id="hist-toggle" type="button">Show history</button>
+      <div id="history" hidden></div>
     </section>
     <section class="panel" id="add">
       <h2>Add to library</h2>
@@ -346,6 +404,13 @@ dialog .foot{display:flex;gap:10px;margin-top:24px;position:sticky;bottom:-24px;
         <div><label for="s-pass">FTP password</label><input class="field" id="s-pass" name="ftp_pass" type="password" placeholder="unchanged" autocomplete="new-password"></div>
       </div>
     </fieldset>
+    <label for="s-webhook">Notification webhook URL</label>
+    <input class="field" id="s-webhook" name="notify_webhook" type="url" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" spellcheck="false">
+    <div class="tools">
+      <button type="button" class="btn quiet" id="cfg-export">Download config</button>
+      <button type="button" class="btn quiet" id="db-backup">Backup database</button>
+      <label class="btn quiet" for="cfg-import">Import config<input type="file" id="cfg-import" accept=".json,application/json" hidden></label>
+    </div>
     <p class="small muted">On the console, start <b>Remote Package Installer</b> to install from here, or enable the FTP server in GoldHEN/etaHEN to copy files.</p>
     <p class="small muted" id="fpkgi"></p>
     <div class="foot"><button class="btn" id="save" value="save">Save</button><button class="btn quiet" value="cancel" formnovalidate>Close</button></div>
@@ -504,14 +569,59 @@ function jobName(j) {
   const src = (j.source || '').split('?')[0].replace(/\/+$/, '');
   return decodeURIComponent(src.split('/').pop() || '') || 'Item';
 }
+const speedSamples = new Map();
+function jobTotalBytes(j) {
+  if (j.total != null && j.total > 0) return j.total;
+  if (j.kind?.startsWith('send')) {
+    const it = S.items.find(i => i.id === j.item_id);
+    if (it?.size) return it.size;
+  } else if (j.kind === 'download') {
+    const e = catalog?.entries?.find(x => x.url === j.source);
+    if (e?.size) return e.size;
+  }
+  const m = /(\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)\s*MiB/i.exec(j.message || '');
+  return m ? parseFloat(m[2]) * 2**20 : null;
+}
+const rate = bps => bps >= 2**20 ? (bps / 2**20).toFixed(1) + ' MiB/s' : bps >= 2**10 ? Math.round(bps / 2**10) + ' KiB/s' : '';
+const etaStr = sec => {
+  if (!isFinite(sec) || sec < 0) return '—';
+  sec = Math.round(sec);
+  if (sec < 3600) return `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
+  return `${String(Math.floor(sec / 3600)).padStart(2, '0')}:${String(Math.floor((sec % 3600) / 60)).padStart(2, '0')}`;
+};
+function sampleJob(j, now) {
+  const prev = speedSamples.get(j.id);
+  const total = jobTotalBytes(j);
+  const p = Number(j.progress) || 0;
+  let bps = null;
+  if (prev && total && p > prev.progress && now > prev.ts) {
+    const inst = (p - prev.progress) * total / ((now - prev.ts) / 1000);
+    bps = prev.bps == null ? inst : prev.bps * 0.6 + inst * 0.4;
+  }
+  const rec = {progress: p, ts: now, bps};
+  speedSamples.set(j.id, rec);
+  return rec;
+}
+function jobRate(j) {
+  const rec = speedSamples.get(j.id);
+  const total = jobTotalBytes(j);
+  if (!rec?.bps || !total) return '—';
+  return `${rate(rec.bps)} · ETA ${etaStr((1 - rec.progress) * total / rec.bps)}`;
+}
 let seenJobs = null;
 function renderJobs() {
   const jobs = S.jobs.filter(j => j.status !== 'hold');
+  const t = Date.now();
+  for (const j of jobs) if (j.status === 'running') sampleJob(j, t);
   $('#clear').hidden = !jobs.some(j => j.status === 'done' || j.status === 'failed');
+  $('#pause-all').hidden = !jobs.some(j => j.status === 'running' && (j.kind === 'download' || j.kind === 'ingest'));
+  $('#resume-all').hidden = !jobs.some(j => j.status === 'paused');
+  $('#cancel-all').hidden = !jobs.some(j => j.kind === 'download' && (j.status === 'queued' || j.status === 'running'));
   $('#jobs').innerHTML = jobs.map(j => `<div class="job" data-s="${j.status}">
       <div class="what">${JOB[j.kind] || esc(j.kind)}: ${esc(jobName(j))}</div>
       <div class="state">${STATE[j.status] || esc(j.status)}${j.status === 'failed' ? ` · <button class="linkish" data-retry="${j.id}">Retry</button>` : ''}${j.status === 'running' && !j.kind.startsWith('send') ? ` · <button class="linkish" data-pause="${j.id}">Pause</button>` : ''}${j.status === 'paused' ? ` · <button class="linkish" data-resume="${j.id}">Resume</button>` : ''}${(j.status === 'running' || j.status === 'queued') ? ` · <button class="linkish" data-cancel="${j.id}">Cancel</button>` : ''}</div>
       ${j.message ? `<div class="detail">${esc(j.message)}</div>` : ''}
+      ${j.status === 'running' ? `<div class="rate">${jobRate(j)}</div>` : ''}
       ${j.status === 'running' ? `<div class="meter ${j.progress > 0 ? '' : 'indet'}"><i style="${j.progress > 0 ? `transform:scaleX(${j.progress.toFixed(4)})` : ''}"></i></div>` : ''}
     </div>`).join('') || '<p class="muted small">Nothing happening. Downloads, conversions and transfers show up here.</p>';
   const now = new Map(jobs.map(j => [j.id, j.status]));
@@ -524,6 +634,7 @@ function renderJobs() {
     });
   }
   seenJobs = now;
+  for (const id of [...speedSamples.keys()]) if (!S.jobs.some(j => j.id === id)) speedSamples.delete(id);
 }
 
 function renderStatus() {
@@ -586,6 +697,34 @@ $('#jobs').addEventListener('click', e => {
 });
 $('#clear').onclick = async () => { await api('/api/jobs/clear', {method: 'POST'}); refresh(); };
 
+const bulkJobs = async (ids, action) => {
+  let ok = 0;
+  for (const id of ids) {
+    try { await fetch(`/api/jobs/${id}/${action}`, {method: 'POST'}); ok++; } catch {}
+  }
+  return ok;
+};
+$('#pause-all').onclick = async () => {
+  const ids = S.jobs.filter(j => j.status === 'running' && (j.kind === 'download' || j.kind === 'ingest')).map(j => j.id);
+  const n = await bulkJobs(ids, 'pause');
+  toast(n ? `Paused ${n} job${n === 1 ? '' : 's'}` : 'Nothing to pause');
+  refresh();
+};
+$('#resume-all').onclick = async () => {
+  const ids = S.jobs.filter(j => j.status === 'paused').map(j => j.id);
+  const n = await bulkJobs(ids, 'resume');
+  toast(n ? `Resumed ${n} job${n === 1 ? '' : 's'}` : 'Nothing to resume');
+  refresh();
+};
+$('#cancel-all').onclick = async () => {
+  const ids = S.jobs.filter(j => j.kind === 'download' && (j.status === 'queued' || j.status === 'running')).map(j => j.id);
+  if (!ids.length) return;
+  if (!confirm(`Cancel ${ids.length} download${ids.length === 1 ? '' : 's'}?`)) return;
+  const n = await bulkJobs(ids, 'cancel');
+  toast(`Cancelled ${n} download${n === 1 ? '' : 's'}`);
+  refresh();
+};
+
 // ---------- shop: browse + install from the catalog ----------
 let catalog = null, view = 'library';
 
@@ -624,13 +763,38 @@ function reconcileCatalog() {
   }
 }
 
+function favs() {
+  try { return new Set(JSON.parse(localStorage.getItem('shelf.favorites') || '[]')); } catch { return new Set(); }
+}
+const saveFavs = s => localStorage.setItem('shelf.favorites', JSON.stringify([...s]));
+const queueSel = new Set();
+function releaseTs(e) {
+  const r = (e.release || '').trim();
+  if (!r) return 0;
+  const dmy = r.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+  if (dmy) return new Date(+dmy[3], +dmy[1] - 1, +dmy[2]).getTime();
+  const ymd = r.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (ymd) return new Date(+ymd[1], +ymd[2] - 1, +ymd[3]).getTime();
+  const t = Date.parse(r);
+  return isNaN(t) ? 0 : t;
+}
+function libraryMatch(e) {
+  if (e.status === 'installed') return 'installed';
+  const tid = (e.title_id || '').trim().toLowerCase();
+  if (tid && (S?.items || []).some(i => (i.title_id || '').toLowerCase() === tid)) return 'title';
+  return '';
+}
+
 function cardHTML(e, i) {
   const st = e.status || '';
   const active = ['queued', 'running', 'paused'].includes(st);
-  const done = st === 'done' || st === 'installed';
+  const inLib = libraryMatch(e);
+  const fav = favs().has(e.url);
+  const sel = queueSel.has(e.url);
   const meta = [e.size ? size(e.size) : '', e.region, e.version].filter(Boolean).map(esc).join(' · ');
   let actions;
-  if (done) actions = `<span class="state" data-s="done">Installed</span>`;
+  if (inLib === 'installed') actions = `<span class="lib">In library</span>`;
+  else if (st === 'done') actions = `<span class="state" data-s="done">Done</span>`;
   else if (active) {
     actions = `<span class="state" data-s="${st}">${esc(STATE[st] || st)}</span>` +
       (st === 'running' && e.job_id != null ? `<button class="btn quiet" data-pause="${e.job_id}">Pause</button>` : '') +
@@ -639,10 +803,12 @@ function cardHTML(e, i) {
   else if (st === 'failed') actions = `<button class="btn" data-install="${i}">Retry</button>`;
   else actions = `<button class="btn" data-install="${i}">Install</button>`;
   return `<article class="card">
-    <div class="cover"><span class="ph">${esc((e.name || '?').trim().slice(0, 1).toUpperCase())}</span>${e.cover_url ? `<img src="${esc(e.cover_url)}" alt="" loading="lazy" onerror="this.remove()">` : ''}</div>
+    <div class="cover"><span class="ph">${esc((e.name || '?').trim().slice(0, 1).toUpperCase())}</span>${e.cover_url ? `<img src="${esc(e.cover_url)}" alt="" loading="lazy" onerror="this.remove()">` : ''}<button class="fav" data-fav="${esc(e.url)}" aria-pressed="${fav}" aria-label="${fav ? 'Remove from favorites' : 'Add to favorites'}">${fav ? '★' : '☆'}</button><input type="checkbox" class="sel" data-sel="${esc(e.url)}" aria-label="Select ${esc(e.name)}"${sel ? ' checked' : ''}></div>
     <div class="meta">
       <div class="name" title="${esc(e.name)}">${esc(e.name)}</div>
       ${e.duplicate ? `<span class="dup" title="Another version of this title is already in your library">another version in library</span>` : ''}
+      ${inLib === 'title' ? `<span class="have" title="This title is already in your library">already downloaded</span>` : ''}
+      ${e.on_console ? `<span class="oncon" title="Installed on your console">On console</span>` : ''}
       ${meta ? `<div class="sub">${meta}</div>` : ''}
       <div class="actions">${actions}</div>
     </div>
@@ -655,17 +821,29 @@ function renderShop() {
   reconcileCatalog();
   const q = $('#shop-q').value.trim().toLowerCase();
   const region = $('#shop-region').value;
+  const sort = $('#shop-sort').value;
+  const favOnly = $('#shop-fav').checked;
+  const favsNow = favs();
   const idxs = [];
   catalog.entries.forEach((e, i) => {
     if (region && e.region !== region) return;
+    if (favOnly && !favsNow.has(e.url)) return;
     if (q && !(e.name || '').toLowerCase().includes(q) && !(e.title_id || '').toLowerCase().includes(q)) return;
     idxs.push(i);
   });
-  const key = q + '|' + region + '|' + idxs.map(i => `${i}:${catalog.entries[i].status}:${catalog.entries[i].job_id}`).join(',');
+  if (sort === 'name') idxs.sort((a, b) => (catalog.entries[a].name || '').localeCompare(catalog.entries[b].name || '', undefined, {sensitivity: 'base'}));
+  else if (sort === 'size-asc') idxs.sort((a, b) => (catalog.entries[a].size || 0) - (catalog.entries[b].size || 0));
+  else if (sort === 'size-desc') idxs.sort((a, b) => (catalog.entries[b].size || 0) - (catalog.entries[a].size || 0));
+  else if (sort === 'newest') idxs.sort((a, b) => releaseTs(catalog.entries[b]) - releaseTs(catalog.entries[a]));
+  const key = [q, region, sort, favOnly, [...favsNow].sort().join(','), idxs.map(i => `${i}:${catalog.entries[i].status}:${catalog.entries[i].job_id}:${catalog.entries[i].on_console ? 1 : 0}`).join(',')].join('|');
   if (key === shopKey) return;
   shopKey = key;
+  $('#shop-queue').disabled = !queueSel.size;
   $('#shop-count').textContent = idxs.length === catalog.entries.length ? `${idxs.length} titles` : `${idxs.length} of ${catalog.entries.length} titles`;
-  $('#shop-grid').innerHTML = idxs.length ? idxs.map(i => cardHTML(catalog.entries[i], i)).join('') : '<p class="muted small">No titles match. Try a different search or region.</p>';
+  const emptyMsg = favOnly && !favsNow.size
+    ? '<p class="muted small">No favorites yet — tap the ☆ on a title to pin it here.</p>'
+    : '<p class="muted small">No titles match. Try a different search or region.</p>';
+  $('#shop-grid').innerHTML = idxs.length ? idxs.map(i => cardHTML(catalog.entries[i], i)).join('') : emptyMsg;
 }
 
 $('#tabs').addEventListener('click', e => {
@@ -673,6 +851,8 @@ $('#tabs').addEventListener('click', e => {
 });
 $('#shop-q').addEventListener('input', renderShop);
 $('#shop-region').addEventListener('change', renderShop);
+$('#shop-sort').addEventListener('change', renderShop);
+$('#shop-fav').addEventListener('change', renderShop);
 $('#shop').addEventListener('click', async e => {
   const inst = e.target.closest('[data-install]');
   if (inst) {
@@ -686,6 +866,39 @@ $('#shop').addEventListener('click', async e => {
   const resume = e.target.closest('[data-resume]');
   if (resume) { await api(`/api/jobs/${resume.dataset.resume}/resume`, {method: 'POST'}); refresh(); toast('Resumed'); }
 });
+$('#shop').addEventListener('click', e => {
+  const fav = e.target.closest('[data-fav]');
+  if (!fav) return;
+  const s = favs();
+  s.has(fav.dataset.fav) ? s.delete(fav.dataset.fav) : s.add(fav.dataset.fav);
+  saveFavs(s);
+  renderShop();
+});
+$('#shop').addEventListener('change', e => {
+  if (!e.target.matches('[data-sel]')) return;
+  e.target.checked ? queueSel.add(e.target.dataset.sel) : queueSel.delete(e.target.dataset.sel);
+  $('#shop-queue').disabled = !queueSel.size;
+});
+$('#shop-queue').onclick = async () => {
+  const urls = [...queueSel];
+  if (!urls.length) return;
+  let n = 0;
+  for (const url of urls) {
+    const entry = catalog?.entries.find(e => e.url === url);
+    try {
+      const res = await fetch('/api/shop/install', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({url})});
+      if (!res.ok) throw new Error(res.status);
+      const data = await res.json();
+      if (entry) { entry.job_id = data.job; entry.status = 'queued'; }
+      n++;
+    } catch {}
+  }
+  queueSel.clear();
+  $('#shop-queue').disabled = true;
+  shopKey = '';
+  toast(`Queued ${n} install${n === 1 ? '' : 's'}`);
+  refresh();
+};
 
 // ---------- storage: disk usage + work-dir cleanup ----------
 let storageData = null;
@@ -711,7 +924,63 @@ async function refreshStorage() {
   catch { return; }
   renderStorage();
 }
-function openStorage() { refreshStorage(); }
+function openStorage() { refreshStorage(); refreshConsole(); }
+
+// ---------- console: installed titles + PKG cleanup ----------
+let consoleData = null;
+async function refreshConsole() {
+  try { consoleData = await (await fetch('/api/console')).json(); }
+  catch { consoleData = null; }
+  renderConsole();
+}
+function renderConsole() {
+  const el = $('#console-body');
+  if (!consoleData) { el.innerHTML = '<p class="muted small">Console status isn’t available right now.</p>'; return; }
+  const c = consoleData;
+  const reachable = !!c.reachable, host = c.host || '';
+  const titles = Array.isArray(c.installed) ? c.installed : [];
+  const pkgs = Array.isArray(c.pkg) ? c.pkg : [];
+  const pkgBytes = c.pkg_bytes ?? pkgs.reduce((a, p) => a + (p.size || 0), 0);
+  const titleChips = titles.length
+    ? titles.map(t => `<span class="chip" title="${esc(t.title_id)}"><b>${esc(t.name)}</b><i>${esc(t.title_id)}</i></span>`).join('')
+    : '<p class="muted small">No titles installed.</p>';
+  const pkgRows = pkgs.length ? pkgs.map(p => `<div class="pkg">
+      <input type="checkbox" class="chk" data-pkg="${esc(p.name)}" aria-label="Select ${esc(p.name)}">
+      <div class="info"><div class="name" title="${esc(p.name)}">${esc(p.name)}</div><div class="meta">${size(p.size)}</div></div>
+      <button class="btn bare" data-pkg-del="${esc(p.name)}">Delete</button>
+    </div>`).join('') : '<p class="muted small">No console PKG files.</p>';
+  el.innerHTML = `<div class="c-status" data-r="${reachable ? 1 : 0}"><span class="led"></span><b>${reachable ? 'Reachable' : 'Unreachable'}</b>${host ? `<span class="muted">${esc(host)}</span>` : ''}</div>
+    ${reachable ? '' : '<p class="muted small">Console isn’t answering. Turn it on and start Remote Package Installer or the FTP server.</p>'}
+    <div class="c-head"><h3>Installed titles</h3></div>
+    <div class="chips">${titleChips}</div>
+    <div class="c-head"><h3>Console PKG files · ${size(pkgBytes)}</h3><button class="btn quiet" id="pkg-del-selected" disabled>Delete selected</button></div>
+    <div id="pkg-list">${pkgRows}</div>`;
+  $('#pkg-del-selected').disabled = true;
+}
+async function deleteConsolePkgs(names) {
+  try {
+    const res = await api('/api/console/delete', {method: 'POST', body: JSON.stringify({names})});
+    toast(`Removed ${(res.removed || []).length || names.length} file${names.length === 1 ? '' : 's'}`);
+  } catch {}
+  refreshConsole();
+}
+$('#storage').addEventListener('click', async e => {
+  const del = e.target.closest('[data-pkg-del]');
+  if (del) {
+    if (!confirm(`Delete “${del.dataset.pkgDel}” from the console?`)) return;
+    await deleteConsolePkgs([del.dataset.pkgDel]);
+    return;
+  }
+  if (e.target.closest('#pkg-del-selected')) {
+    const names = [...document.querySelectorAll('#pkg-list input:checked')].map(i => i.dataset.pkg);
+    if (!names.length) return;
+    if (!confirm(`Delete ${names.length} PKG file${names.length === 1 ? '' : 's'} from the console?`)) return;
+    await deleteConsolePkgs(names);
+  }
+});
+$('#storage').addEventListener('change', e => {
+  if (e.target.matches('[data-pkg]')) $('#pkg-del-selected').disabled = !document.querySelector('#pkg-list input:checked');
+});
 
 function renderStorage() {
   if (!storageData) return;
@@ -860,6 +1129,69 @@ $('#f-set').addEventListener('submit', async e => {
   await api('/api/settings', {method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(e.target)))});
   refresh(); closeDrawer(); toast('Settings saved');
 });
+
+$('#cfg-export').onclick = async () => {
+  try {
+    const r = await fetch('/api/config/export');
+    if (!r.ok) throw new Error(r.status);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(await r.blob());
+    a.download = 'shelf-config.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast('Config downloaded');
+  } catch { toast('Config export failed'); }
+};
+$('#cfg-import').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try {
+    const cfg = JSON.parse(await f.text());
+    await api('/api/config/import', {method: 'POST', body: JSON.stringify(cfg)});
+    refresh(); toast('Config imported');
+  } catch { toast('Import failed'); }
+  e.target.value = '';
+};
+$('#db-backup').onclick = async () => {
+  try {
+    const res = await api('/api/db/backup', {method: 'POST'});
+    toast(res.file ? `Backup saved: ${esc(res.file)}${res.size != null ? ` (${size(res.size)})` : ''}` : 'Database backed up');
+  } catch {}
+};
+
+// ---------- history: on-demand recent jobs ----------
+let historyData = null;
+const jobTs = j => {
+  const t = j.updated ?? j.created;
+  if (t == null) return '';
+  const n = typeof t === 'number' ? (t > 1e12 ? t / 1000 : t) : Date.parse(t) / 1000;
+  return isNaN(n) ? '' : n;
+};
+function renderHistory() {
+  const jobs = Array.isArray(historyData) ? historyData : [];
+  $('#history').innerHTML = jobs.length ? jobs.map(j => `<div class="hist" data-s="${esc(j.status)}">
+      <span class="what">${esc(JOB[j.kind] || j.kind || 'Job')}</span>
+      <span class="state">${esc(STATE[j.status] || j.status)}</span>
+      <span class="when">${ago(jobTs(j))}</span>
+      ${j.message ? `<span class="detail">${esc(j.message)}</span>` : ''}
+    </div>`).join('') : '<p class="muted small">No history yet.</p>';
+}
+$('#hist-toggle').onclick = async () => {
+  const box = $('#history');
+  if (box.hidden) {
+    if (historyData == null) {
+      try {
+        const d = await (await fetch('/api/jobs?limit=50')).json();
+        historyData = Array.isArray(d) ? d : (d && Array.isArray(d.jobs) ? d.jobs : []);
+      } catch { historyData = []; }
+    }
+    renderHistory();
+    box.hidden = false;
+    $('#hist-toggle').textContent = 'Hide history';
+  } else {
+    box.hidden = true;
+    $('#hist-toggle').textContent = 'Show history';
+  }
+};
 
 
 // ---------- mouse: tiles tilt toward the cursor, a soft light trails it ----------

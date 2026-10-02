@@ -21,6 +21,13 @@ ARIA2_CONN = int(os.environ.get("ARIA2_CONN", "8"))
 STALL_SECONDS = int(os.environ.get("STALL_SECONDS", "180"))
 # aria2 closes a connection whose speed drops below this (dead-node crawls). Suffix K/M allowed.
 MIN_DOWNLOAD_RATE = os.environ.get("MIN_DOWNLOAD_RATE", "100K")
+# A download that has allocated at least this % of its size is allowed to finish even if it stalls.
+FINISH_NEAR_COMPLETE_PCT = float(os.environ.get("FINISH_NEAR_COMPLETE_PCT", "95"))
+# Retry transient download failures (bad node, network, checksum) with these delays, in seconds.
+MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
+RETRY_DELAYS = (60, 300, 900)
+# Verify archive.org files against the item's md5/sha1/crc32 once downloaded.
+VERIFY_CHECKSUM = os.environ.get("VERIFY_CHECKSUM", "1").strip().lower() in ("1", "true", "yes", "on")
 
 # Host allow-list for user-supplied download URLs (SSRF guard); a leading dot also matches subdomains.
 ALLOWED_DOWNLOAD_HOSTS = tuple(
@@ -53,6 +60,10 @@ DEFAULTS = {
     "public_url": os.environ.get("PUBLIC_URL", ""),
     # none | ftp | rpi — what to do automatically once a PKG lands in the library.
     "auto_send": os.environ.get("AUTO_SEND", "none"),
+    # Hold downloads while a send_* job is running; they share the WiFi (~12 MiB/s each).
+    "pause_download_while_sending": os.environ.get("PAUSE_DOWNLOAD_WHILE_SENDING", "1"),
+    # Optional http(s) webhook POSTed when a job reaches done/failed; empty disables.
+    "notify_webhook": os.environ.get("NOTIFY_WEBHOOK", ""),
 }
 
 for d in (INBOX, LIBRARY, WORK, FAILED, ICONS):

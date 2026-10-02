@@ -29,6 +29,8 @@ def _migrate():
         return {r["name"] for r in _conn.execute(f"PRAGMA table_info({table})").fetchall()}
     for table, name, decl in (("jobs", "autosend", "TEXT DEFAULT ''"),
                               ("jobs", "parent_id", "INTEGER"),
+                              ("jobs", "attempts", "INTEGER DEFAULT 0"),
+                              ("jobs", "retry_at", "REAL DEFAULT 0"),
                               ("items", "source_url", "TEXT")):
         if name not in cols(table):
             _conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
@@ -92,14 +94,34 @@ def finish_job(job_id, status, progress=None, message=None):
     if message is not None:
         sets.append("message=?")
         args.append(message)
+    if status == "done":
+        sets += ["attempts=0", "retry_at=0"]
     args.append(job_id)
     x(f"UPDATE jobs SET {', '.join(sets)} WHERE id=?", *args)
+    if status in ("done", "failed"):
+        rows = q("SELECT id, kind, item_id, message FROM jobs WHERE id=?", job_id)
+        if rows:
+            from . import notify
+            notify.terminal(rows[0], status)
+
+
+def backup(dest):
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with _lock:
+        target = sqlite3.connect(str(dest))
+        try:
+            _conn.backup(target)
+        finally:
+            target.close()
 
 
 def claim_job(kinds) -> dict | None:
     marks = ",".join("?" * len(kinds))
     with cur() as c:
-        row = c.execute(f"SELECT * FROM jobs WHERE status='queued' AND kind IN ({marks}) ORDER BY id LIMIT 1", kinds).fetchone()
+        row = c.execute(
+            f"SELECT * FROM jobs WHERE status='queued' AND kind IN ({marks}) AND retry_at <= ? ORDER BY id LIMIT 1",
+            (*kinds, time.time()),
+        ).fetchone()
         if not row:
             return None
         c.execute("UPDATE jobs SET status='running', updated=? WHERE id=?", (time.time(), row["id"]))

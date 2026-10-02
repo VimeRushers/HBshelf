@@ -113,6 +113,7 @@ Everything under the data dir (`DATA_DIR`, `/data` in the container; bind-mounte
 │   └── ingest-<job>-<ts>/          inbox handoff; removed after processing
 ├── failed/<name>/                  inputs that could not be converted (kept for inspection)
 ├── icons/<CONTENT_ID>.png           extracted title icons
+├── backups/shelf-<timestamp>.db     snapshots from POST /api/db/backup
 └── shelf.db                        SQLite (WAL): items, jobs, settings
 ```
 
@@ -262,6 +263,12 @@ forever. When `aria2c` is present (`downloads.is_aria2()`), downloads use `worke
   line or logs.
 - If a multi-connection attempt fails with a retryable aria2 exit code (`ARIA2_RETRY_CODES`), it is
   retried once with `--split=1`. Fatal codes map to human-readable messages in `ARIA2_ERRORS`.
+- Archive.org server rotation: `downloads.archive_candidates` reads the item metadata and returns the
+  `/download/` URL first, then each storage server (`server`, `d1`, `d2`, `workable_servers`). A node
+  that fails its health probe or exits aria2 with a retryable code is skipped for the next candidate.
+- Checksum verification: when `VERIFY_CHECKSUM` is on (default), the archive item metadata's `md5`,
+  `sha1` and `crc32` are compared against the finished file (`downloads.verify_checksum`). A mismatch
+  keeps the file for inspection and raises a transient error so the job retries.
 - Without aria2, `worker.download` (requests) does a streamed download with `Range` resume of an
   existing `*.part` and retries.
 
@@ -274,6 +281,10 @@ Dead or throttled archive.org nodes can sit at 0 bytes/s indefinitely. Two guard
 - `STALL_SECONDS` (default 180) is a watchdog in `worker._poll_aria2`: if allocated bytes do not grow
   for that long, aria2 is terminated and the job fails with a "download stalled" message so you can
   retry later.
+
+A transfer that is already `FINISH_NEAR_COMPLETE_PCT` (default 95) complete is exempt: aria2 is not
+given `--lowest-speed-limit` for it, and the stall deadline is tripled, so a slow tail is allowed to
+finish instead of throwing away a near-complete multi-GB file.
 
 ### Storage / cleanup tab
 
@@ -296,13 +307,53 @@ deleted only via an explicit `ids` request. Directories belonging to queued, run
 are never deleted. **Library items** can be deleted from the same tab (`DELETE /api/items/{id}`
 removes the PKG, the icon and the DB row).
 
-### Pause / Cancel / Resume
+### Console tab
+
+`GET /api/console` connects to the homebrew FTP server (`ps4_host:ftp_port`, same credentials as FTP
+delivery) just long enough to inventory the console: `reachable`, the installed title ids from
+`/user/appmeta`, and the files in the destination `ftp_dir` with their sizes. The connect/login is
+best-effort like `probe_http` — any failure returns HTTP 200 with `reachable: false` and empty lists
+rather than an error, so the UI can show the console as offline without the request failing.
+`POST /api/console/delete` removes named files from `ftp_dir`; names containing `/`, `\` or `..` are
+rejected with 400 and missing files are ignored. The Shop also marks entries already installed on the
+console (`on_console`).
+
+### Notifications
+
+Set `notify_webhook` (Settings, or `NOTIFY_WEBHOOK`) to an http(s) URL to be POSTed a generic
+`{"text": "...", "content": "..."}` payload whenever a job reaches `done` or `failed` — suitable for
+Slack/Discord-style incoming webhooks. Delivery is best-effort with a 5 s timeout and never fails the
+worker; a failed POST is logged at warning. Cancelled jobs do not notify unless their final status is
+`failed`.
+
+### Config export / import and DB backup
+
+`GET /api/config/export` returns every setting (never the `ftp_pass` value) plus `exported_at`, for
+copying a configuration between installs. `POST /api/config/import` accepts that dict and validates each
+field with exactly the same rules as `/api/settings` (ports, `ftp_dir`, `public_url`, `notify_webhook`,
+`auto_send`, booleans), applying valid values or returning 400. `POST /api/db/backup` writes a consistent
+snapshot with SQLite's online backup API to `<DATA_DIR>/backups/shelf-<UTC timestamp>.db` and returns
+the path and size.
+
+
 
 `POST /api/jobs/{id}/pause` pauses a queued or running job and calls `worker.request_pause`, which
 terminates the aria2 process but keeps `.part` + `.aria2`. `resume` requeues a paused job so the
-download continues. `cancel` fails a queued/paused job immediately (and removes its work dir) or marks
-a running job `cancelled`, which the worker notices and unwinds. Jobs interrupted by a restart are
-requeued; paused jobs stay paused.
+download continues. `cancel` is **non-destructive**: it stops the transfer but never deletes the work
+dir, `.part` or `.aria2` (a mis-click must not destroy multi-GB progress). A queued/paused job becomes
+`failed` / "Cancelled"; a running job is marked `cancelled` and the worker finalises it. Work dirs are
+deleted only from the Storage tab (`POST /api/storage/clean`, `POST /api/jobs/{id}/delete`). Jobs
+interrupted by a restart are requeued; paused jobs stay paused.
+
+### Auto-retry with backoff
+
+Transient download failures — a bad/slow archive.org node, aria2 retry codes (`ARIA2_RETRY_CODES`),
+`requests` network errors, "too slow" / "bad response header" / "ended early", or a checksum mismatch —
+requeue the same job with exponential backoff (60/300/900 s) up to `MAX_RETRIES` (default 3) instead of
+failing permanently. Each failed run increments `jobs.attempts`; `jobs.retry_at` holds the next eligible
+time and `db.claim_job` skips a job until then. Both columns are surfaced by `/api/state` (`jobs` uses
+`SELECT *`). Success resets them to 0. Non-transient errors (bad URL, HTTP 404, disk full, no installable
+PKG) and user cancel/pause never auto-retry; the **Retry** button always resets `attempts`/`retry_at`.
 
 ### FPKGi endpoint
 
@@ -338,6 +389,8 @@ All JSON unless noted. There is no authentication (see [Security](#security)).
 | GET | `/healthz` | — | `{"ok": true}` | — |
 | GET | `/api/state` | — | items, latest 60 jobs, settings (sans `ftp_pass`), PS4 probe, disk free/total | — |
 | GET | `/api/catalog` | query: `q`, `region`, `limit`, `offset` | `{"count": n, "entries": [...]}` | — |
+| GET | `/api/console` | — | `{"reachable": bool, "host": str, "installed": [...], "pkg": [...], "pkg_bytes": n}` | — |
+| POST | `/api/console/delete` | `{"names": ["..."]}` | `{"removed": [...]}` | 400 unsafe name |
 | POST | `/api/shop/install` | `{"url": "..."}` | `{"job": id}` | 400 not in catalog; 507 no space |
 | POST | `/api/download` | `{"url": "..."}` | `{"job": id}` | 400 bad URL / host not allowed; 507 no space |
 | PUT | `/api/upload/{filename}` | raw bytes (streamed) | `{"ok": true}` | 400 bad filename; 413 over `MAX_UPLOAD_GB` |
@@ -349,9 +402,13 @@ All JSON unless noted. There is no authentication (see [Security](#security)).
 | POST | `/api/jobs/{id}/cancel` | — | `{"ok": true}` | 404 not found |
 | POST | `/api/jobs/{id}/delete` | — | `{"ok": true}` | 404 not found; 409 still active |
 | POST | `/api/jobs/clear` | — | `{"ok": true}` | — |
+| GET | `/api/jobs` | query: `limit` (default 50, max 500) | `{"jobs": [...]}`, newest first | — |
 | GET | `/api/storage` | — | free/total, `failed_bytes`, `work[]`, `library_bytes` | — |
 | POST | `/api/storage/clean` | `{"ids": [..], "job_ids": [..], "all_orphans": bool}` | `{"removed": [...], "freed": n}` | 400 unsafe id |
 | POST | `/api/settings` | any subset of the setting keys | `{"ok": true}` | 400 invalid value |
+| GET | `/api/config/export` | — | `{"settings": {...}, "exported_at": epoch}` (`ftp_pass` omitted) | — |
+| POST | `/api/config/import` | settings dict | `{"ok": true}` | 400 invalid value |
+| POST | `/api/db/backup` | — | `{"file": path, "size": n}` | — |
 | GET/HEAD | `/pkg/{item_id}/{name}` | — | PKG bytes (`application/octet-stream`) | 404 missing item/file |
 | GET | `/icons/{content_id}.png` | — | PNG, `Cache-Control: max-age=86400` | 404 |
 | GET | `/fpkgi/{section}.json` | section `GAMES\|UPDATES\|DLC\|HOMEBREW` | `{"DATA": {url: {...}}}` | 404 unknown section |
@@ -359,8 +416,9 @@ All JSON unless noted. There is no authentication (see [Security](#security)).
 Notes:
 
 - **`/api/catalog`** merges each entry with its job/item state: `status` is one of `queued`, `running`,
-  `paused`, `installed`, or a terminal job status; `job_id` and `item_id` link to the current job/item.
-  `count` is the total before `limit`/`offset`.
+  `paused`, `installed`, or a terminal job status; `job_id` and `item_id` link to the current job/item;
+  `on_console` is true when the entry's `title_id` is installed on the console (the console set is
+  fetched over FTP and cached for 60 s). `count` is the total before `limit`/`offset`.
 - **`/api/shop/install`** returns the existing job id for an in-flight download, or a new `send_auto`
   job id if the item is already in the library, or a new `download` job id.
 - **`/api/download`** requires `http(s)://` and, unless `ALLOW_ANY_DOWNLOAD` is set, a host in
@@ -368,8 +426,18 @@ Notes:
 - **`/api/upload/{filename}`** streams to `inbox/.<name>.uploading` and renames only on success, so the
   inbox watcher never sees a partial file.
 - **`/api/settings`** validates `auto_send ∈ {none, ftp, rpi, auto}`, ports `1..65535`, `ftp_dir` as an
-  absolute path with no `..`, and `public_url` as `http(s)://…`. A blank `ftp_pass` keeps the stored
-  password. Only keys present in `config.DEFAULTS` are persisted.
+  absolute path with no `..`, `public_url` as `http(s)://…`, `notify_webhook` as `http(s)://…` or empty,
+  and `pause_download_while_sending` as a boolean (`1/true/yes/on` or `0/false/no/off`). A blank `ftp_pass`
+  keeps the stored password. Only keys present in `config.DEFAULTS` are persisted.
+- **`/api/config/import`** runs the same validation as `/api/settings` over the posted dict and applies
+  every valid value; any invalid field is a 400 and nothing is applied. `/api/config/export` mirrors
+  `/api/state`'s settings (no `ftp_pass`) plus `exported_at`.
+- **`/api/db/backup`** writes a consistent snapshot with SQLite's online backup API to
+  `<DATA_DIR>/backups/shelf-<UTC timestamp>.db`.
+- **`/api/console`** is a best-effort FTP inventory: if the console's FTP server does not answer, it
+  returns HTTP 200 with `reachable: false` and empty `installed`/`pkg` lists. `installed` lists
+  `/user/appmeta` title ids (named from the library when known); `pkg` lists files in `ftp_dir` with
+  sizes. `POST /api/console/delete` refuses any name containing `/`, `\` or `..` and ignores missing files.
 - **`/pkg/{item_id}/{name}`** is what RPI and FPKGi fetch; `HEAD` is supported for size checks.
 - **`/icons/{content_id}.png`** sanitises the path with `os.path.basename`.
 
@@ -404,7 +472,8 @@ states are written with `db.finish_job`**, not `update_job`. `finish_job` is wha
 cancel/pause (see `tests/test_worker_lifecycle.py`). On startup, any `running` job becomes `queued`
 ("requeued after restart") and any `cancelled` job becomes `failed`. `parent_id` links auto-send child
 jobs to the fetch job that spawned them; the `autosend` column can override the global setting for a
-single job.
+single job. `attempts` counts failed download runs and `retry_at` is the earliest time `claim_job` may
+pick the job up again (0 = now); both are reset to 0 when a job completes.
 
 ---
 
@@ -439,6 +508,8 @@ These seed the Settings form; changes in the UI persist in SQLite.
 | `PS4_RPI_PORT` | `12800` | Remote Package Installer port. |
 | `PUBLIC_URL` | *(empty)* | This server's address as the console sees it, e.g. `http://192.168.1.10:8420`. Required for RPI and FPKGi. |
 | `AUTO_SEND` | `none` | What to do after a new PKG lands: `none`, `ftp`, `rpi` or `auto`. |
+| `PAUSE_DOWNLOAD_WHILE_SENDING` | `1` | Hold the fetch worker while a `send_*` job runs (shared WiFi). Editable in the UI. |
+| `NOTIFY_WEBHOOK` | *(empty)* | Optional http(s) webhook POSTed (`{"text","content"}`) when a job reaches `done`/`failed`. Editable in the UI. |
 
 ### Downloads & Internet Archive
 
@@ -449,6 +520,9 @@ These seed the Settings form; changes in the UI persist in SQLite.
 | `ARIA2_CONN` | `8` | Max aria2 connections per server (`--max-connection-per-server`). |
 | `MIN_DOWNLOAD_RATE` | `100K` | aria2 `--lowest-speed-limit`; drop connections slower than this. `K`/`M` suffixes allowed. |
 | `STALL_SECONDS` | `180` | Fail a download that allocates no new bytes for this many seconds (dead-node watchdog). |
+| `FINISH_NEAR_COMPLETE_PCT` | `95` | A transfer at least this complete ignores the speed/stall guard and is allowed to finish. |
+| `VERIFY_CHECKSUM` | `1` | Verify archive.org files against the item metadata's `md5`/`sha1`/`crc32`. |
+| `MAX_RETRIES` | `3` | Transient download failures retried with 60/300/900 s backoff before giving up. |
 | `ALLOWED_DOWNLOAD_HOSTS` | `archive.org,.archive.org` | Comma-separated allow-list for `POST /api/download`. A leading dot also matches subdomains. |
 | `ALLOW_ANY_DOWNLOAD` | `0` | When truthy (`1/true/yes/on`), accept any http(s) host (disables the SSRF guard). |
 
@@ -489,9 +563,13 @@ These seed the Settings form; changes in the UI persist in SQLite.
 
 **Internet Archive returns 500s, throttles, or serves from a dead node.**
 Archive.org load-balances across storage nodes; some are very slow or stop sending. The stall guard
-(`MIN_DOWNLOAD_RATE` + `STALL_SECONDS`) terminates and fails the job instead of hanging forever.
-Retry to resume from the `.part`/`.aria2` files, or increase `STALL_SECONDS` for genuinely slow links.
-Multiple connection failures automatically retry once with a single connection.
+(`MIN_DOWNLOAD_RATE` + `STALL_SECONDS`) terminates a dead node instead of hanging forever, and
+`download_aria2` then rotates to the item's next storage server before giving up. A failure that is
+transient requeues the job automatically with 60/300/900 s backoff (`MAX_RETRIES`), resuming from the
+`.part`/`.aria2` files; non-transient errors fail immediately. Multiple connection failures retry once
+with a single connection. A file that is at least `FINISH_NEAR_COMPLETE_PCT` complete is exempt from
+the guards so a slow tail can finish. If a finished file fails `VERIFY_CHECKSUM`, the corrupt file is
+kept for inspection and the job is retried.
 
 **RPI accepts TCP then closes with no bytes / job times out.**
 A previously-running RPI payload can wedge and accept connections without answering. `probe_http`
@@ -549,8 +627,10 @@ DATA_DIR="$check_dir" PYTHONPATH=app python -m unittest discover -s app/tests -v
 ```
 
 Coverage: catalog parsing, mtime-cache reload and duplicate flagging (`test_catalog.py`); Archive
-login, host detection, cookie scoping, streamed download and Range resume (`test_downloads.py`); and
-terminal-state / work-dir lifecycle (`test_worker_lifecycle.py`).
+login, host detection, cookie scoping, streamed download, Range resume, checksum verification and
+server candidates (`test_downloads.py`); terminal-state / work-dir lifecycle, retry classification,
+backoff and cancel-preserves-partial (`test_worker_lifecycle.py`); and console-delete path safety,
+config-import validation, DB backup and the catalog `on_console` merge (`test_console_config.py`).
 
 ---
 
@@ -588,13 +668,15 @@ app/
 │   ├── pkg.py              minimal PS4 PKG + param.sfo reader (magic, metadata, icon)
 │   ├── convert.py          Converter: validate, split-merge, unar extract, dump→GP4→PkgTool
 │   ├── downloads.py        Archive login/session, cookie file, host allow-list, aria2 detection
-│   ├── delivery.py         FTP upload, RPI install, auto fallback, probes, pkg URL
+│   ├── delivery.py         FTP upload, RPI install, auto fallback, probes, console inventory/delete, pkg URL
+│   ├── notify.py           best-effort terminal-job webhook POSTs
 │   ├── worker.py           inbox watcher, fetch/convert worker, send worker, aria2 runner, stall guard
 │   ├── catalog.py          GAMES.json loader with mtime cache and duplicate flagging
-│   ├── main.py             FastAPI app: routes, settings, storage, FPKGi, PS4 probe
+│   ├── main.py             FastAPI app: routes, settings, storage, console, config/backup, FPKGi, PS4 probe
 │   └── static/index.html   single-file web UI (library, shop, storage, settings drawer)
 └── tests/
     ├── test_catalog.py          catalog parsing / reload / duplicates
+    ├── test_console_config.py   console delete safety, config import, DB backup, on_console merge
     ├── test_downloads.py        Archive auth, host detection, download + resume
     └── test_worker_lifecycle.py terminal-state and work-dir behaviour
 docker-compose.yml          service, volumes, ports, resource limits, optional proxy network

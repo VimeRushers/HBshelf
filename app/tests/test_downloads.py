@@ -1,4 +1,5 @@
 """Offline authentication and resume regression tests (use a temporary DATA_DIR)."""
+import hashlib
 import os
 import tempfile
 import unittest
@@ -8,7 +9,8 @@ from unittest.mock import Mock, patch
 import requests
 
 from shelf import worker
-from shelf.downloads import DownloadError, download_session, is_archive_url, login_archive
+from shelf.downloads import (DownloadError, TransientDownloadError, archive_candidates, archive_checksum,
+                             archive_servers, download_session, is_archive_url, login_archive, verify_checksum)
 
 
 def response(status=200, payload=None, body=b"package", url="https://archive.org/download/item/file.pkg"):
@@ -105,7 +107,8 @@ class DownloadTests(unittest.TestCase):
         self.job = {"id": 1, "created": 1, "source": "http://archive.org/download/item/file.pkg"}
 
     def run_download(self, result):
-        with patch.object(worker, "download_session") as factory, patch.object(worker, "need_space"):
+        with patch.object(worker, "download_session") as factory, patch.object(worker, "need_space"), \
+                patch.object(worker, "archive_checksum", return_value={}):
             session = factory.return_value.__enter__.return_value
             session.get.return_value = result
             folder = worker.download(self.job, Mock())
@@ -145,6 +148,15 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(call.args[0], self.job["source"])
         self.assertEqual((folder / "file.pkg").read_bytes(), b"package")
 
+    def test_checksum_mismatch_is_transient_and_keeps_file(self):
+        with patch.object(worker, "download_session") as factory, patch.object(worker, "need_space"), \
+                patch.object(worker, "archive_checksum", return_value={"md5": "0" * 32}):
+            session = factory.return_value.__enter__.return_value
+            session.get.return_value = response()
+            with self.assertRaises(TransientDownloadError):
+                worker.download(self.job, Mock())
+        self.assertTrue((self.work / "dl-1-1" / "file.pkg").exists())
+
     def test_failed_transfer_keeps_partial_for_retry(self):
         result = response()
 
@@ -156,6 +168,92 @@ class DownloadTests(unittest.TestCase):
         with self.assertRaises(requests.ConnectionError):
             self.run_download(result)
         self.assertEqual((self.work / "dl-1-1" / "file.pkg.part").read_bytes(), b"pack")
+
+
+class Aria2RotationTests(unittest.TestCase):
+    URL = "https://archive.org/download/item/file.pkg"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.patch = patch.object(worker, "WORK", Path(self.temp.name))
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+        self.job = {"id": 7, "created": 1, "source": self.URL}
+
+    def test_rotates_to_next_server_after_transient_failure(self):
+        candidates = [self.URL, "https://ia800/0/items/item/file.pkg", "https://ia900/0/items/item/file.pkg"]
+        tried = []
+
+        def fake_poll(cmd, job, part, total, name, report):
+            tried.append(cmd[-1])
+            if len(tried) == 1:
+                raise TransientDownloadError("source node stalled")
+            part.write_bytes(b"x" * total)
+            return 0
+
+        session = Mock()
+        ctx = Mock()
+        ctx.__enter__ = Mock(return_value=session)
+        ctx.__exit__ = Mock(return_value=False)
+        with patch.object(worker, "download_session", return_value=ctx), \
+                patch.object(worker, "write_cookies", return_value=False), \
+                patch.object(worker, "head_size", return_value=100), \
+                patch.object(worker, "archive_candidates", return_value=candidates), \
+                patch.object(worker, "archive_url_ok", return_value=True), \
+                patch.object(worker, "archive_checksum", return_value={}), \
+                patch.object(worker, "need_space"), \
+                patch.object(worker, "_poll_aria2", side_effect=fake_poll):
+            folder = worker.download_aria2(self.job, Mock())
+        self.assertEqual(tried, [self.URL, candidates[1]])
+        self.assertTrue((folder / "file.pkg").exists())
+
+
+class ArchiveChecksumTests(unittest.TestCase):
+    URL = "https://archive.org/download/item/file.pkg"
+
+    def test_servers_are_ordered_and_deduplicated(self):
+        meta = {"server": "ia800", "d1": "dn1", "d2": "dn1", "workable_servers": ["ia900", "ia800"]}
+        self.assertEqual(archive_servers(meta), ["ia800", "dn1", "ia900"])
+
+    def test_candidates_put_redirect_first_then_each_server(self):
+        meta = {"dir": "/0/items/item", "server": "ia800", "workable_servers": ["ia900"]}
+        with patch("shelf.downloads.archive_metadata", return_value=meta) as fetch:
+            self.assertEqual(archive_candidates(self.URL), [
+                self.URL,
+                "https://ia800/0/items/item/file.pkg",
+                "https://ia900/0/items/item/file.pkg",
+            ])
+        fetch.assert_called_once_with("item", None)
+
+    def test_checksum_lookup_matches_exact_then_basename(self):
+        meta = {"files": [{"name": "nested/file.pkg", "md5": "a" * 32, "sha1": "b" * 40, "crc32": "deadbeef", "size": "1"}]}
+        with patch("shelf.downloads.archive_metadata", return_value=meta):
+            self.assertEqual(archive_checksum(self.URL), {"md5": "a" * 32, "sha1": "b" * 40, "crc32": "deadbeef"})
+
+    def test_checksum_lookup_unknown_file_is_empty(self):
+        with patch("shelf.downloads.archive_metadata", return_value={"files": [{"name": "other.bin"}]}):
+            self.assertEqual(archive_checksum(self.URL, "file.pkg"), {})
+
+    def test_checksum_lookup_needs_no_network_when_not_archive(self):
+        self.assertEqual(archive_checksum("https://example.com/file.pkg"), {})
+
+    def test_verify_checksum_accepts_match_and_no_expected(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "file.bin"
+        path.write_bytes(b"package")
+        verify_checksum(path, {})  # nothing expected: no-op
+        verify_checksum(path, {"md5": hashlib.md5(b"package").hexdigest(), "sha1": hashlib.sha1(b"package").hexdigest()})
+
+    def test_verify_checksum_mismatch_is_transient(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "file.bin"
+        path.write_bytes(b"package")
+        with self.assertRaisesRegex(TransientDownloadError, "checksum mismatch"):
+            verify_checksum(path, {"md5": "0" * 32})
+        self.assertTrue(path.exists())
 
 
 if __name__ == "__main__":
